@@ -1,7 +1,5 @@
 # Competition data (CC BY-NC 4.0, no redistribution)
-dataset/*.parquet
-dataset/*.csv
-!dataset/sample_submission.csv
+dataset/
 
 # Model artifacts / checkpoints
 *.pt
