@@ -1,0 +1,40 @@
+# Competition data (CC BY-NC 4.0, no redistribution)
+dataset/*.parquet
+dataset/*.csv
+!dataset/sample_submission.csv
+
+# Model artifacts / checkpoints
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pkl
+*.joblib
+*.bin
+models/
+checkpoints/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kaggle / secrets
+kaggle.json
+.env
+
+# OnTrack local evidence (not for public repo)
+.ontrack/
