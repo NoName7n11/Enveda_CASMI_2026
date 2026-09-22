@@ -3,7 +3,7 @@
 import os
 import pandas as pd
 import pytest
-from src.data import load_sampled_train
+from src.data import load_sampled_train, make_validation_split
 from src.baseline import build_submission
 from src.metric import mrr_at_25
 
@@ -15,23 +15,15 @@ def test_baseline_pipeline_end_to_end_on_real_sample():
     # Small sample for test speed; real dev notebook uses a larger sample_size.
     train_df = load_sampled_train(sample_size=5_000, random_state=0)
 
-    # Build a tiny held-out "test" set from train itself (molecule-level split)
-    # so we have known ground truth to score against, without touching the
-    # real dataset/test.parquet (which has no labels).
+    # Build a tiny held-out validation query set from train itself (spectrum-level
+    # split within each held-out molecule, so the correct structure remains
+    # retrievable from the candidate pool) so we have known ground truth to score
+    # against, without touching the real dataset/test.parquet (which has no labels).
     unique_molecule_formulas = train_df["molecular_formula"].dropna().unique()
     assert len(unique_molecule_formulas) > 0, "sampled train data unexpectedly empty"
 
-    # Pick spectra for a handful of distinct structures as our held-out query set.
-    held_out_keys = train_df["inchikey14"].drop_duplicates().head(10)
-    held_out_df = train_df[train_df["inchikey14"].isin(held_out_keys)].copy()
-    held_out_df["molecule_id"] = held_out_df["inchikey14"]  # stand-in molecule_id
-
-    remaining_train_df = train_df[~train_df["inchikey14"].isin(held_out_keys)]
-
-    ground_truth = (
-        held_out_df.drop_duplicates("inchikey14")
-        .set_index("molecule_id")["normalized_smiles"]
-        .to_dict()
+    held_out_df, remaining_train_df, ground_truth = make_validation_split(
+        train_df, n_held_out=10, random_state=0
     )
 
     submission_df = build_submission(held_out_df, remaining_train_df, ppm_tolerance=15.0, top_k=25)
