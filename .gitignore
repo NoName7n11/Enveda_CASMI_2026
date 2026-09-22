@@ -1,6 +1,9 @@
 # Competition data (CC BY-NC 4.0, no redistribution)
 dataset/
 
+# Generated submission output
+submission.csv
+
 # Model artifacts / checkpoints
 *.pt
 *.pth
