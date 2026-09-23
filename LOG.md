@@ -420,3 +420,38 @@ was longer than 75k scale (network/computation naturally scales with
 result came from a single overnight-adjacent run, not a multi-day
 wait, confirming scaling further (e.g. toward the full ~2.5M-spectra
 dataset) remains a viable next step rather than a dead end.
+
+### Scaled sample_size 300k → 1M (bounded change)
+
+**What:** same single-parameter change as the 300k step, bumped
+`sample_size` to 1,000,000 and re-ran the full pipeline. Monitored
+system memory closely before starting (this machine has 16GB RAM, and
+Task 4 of the baseline sub-project previously hit a real MemoryError
+at large scale before the pyarrow-columnar fix) — free RAM dropped to
+~1.1GB at the load's peak, uncomfortably low, but the process completed
+without OOM or crash (peaked around 6.6GB working set, well within the
+already-fixed columnar-loading path's actual footprint).
+
+**Result:** 242,061 unique structures (up from 300k's 144,532),
+reranker training set grew to **16,468 rows/153 positive** (up from
+5,963/97). Independent double-holdout: baseline MRR@25 = 0.4732,
+reranked MRR@25 = **0.6416**, delta = **+0.1684** (~35.6% relative
+improvement) — a much larger jump than the 75k→300k step's own
+improvement, more than the 3.3x row-count scale factor alone would
+obviously predict. This is a genuine double-holdout result (not the
+earlier in-sample bug), but the size of the jump is flagged here for
+honesty rather than taken entirely at face value: it may partly reflect
+the specific 200 molecules randomly drawn for this run's `random_state=99`
+eval split happening to be easier/more represented in the larger 1M
+candidate pool, not purely a smooth scaling law. A future run with a
+different eval `random_state` would help confirm how much of this is
+signal versus this-particular-split variance. Both `submission.csv` and
+`submission_reranked.csv` regenerated (400 rows each, format-validated).
+All 41 tests still passing. Total wall-clock: ~50 minutes, still well
+within a single working session, not yet approaching a scaling wall —
+the full ~2.5M-spectra dataset remains a plausible next step, though
+this run's tight memory margin (1.1GB free at peak) suggests the full
+dataset may need more careful memory management or a machine with more
+RAM (e.g. a Kaggle/Colab notebook, which WORKFLOW.md already earmarks
+for full-dataset processing) rather than pushing this local machine
+further.
