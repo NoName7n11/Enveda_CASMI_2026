@@ -26,6 +26,7 @@ mlartifacts/
 __pycache__/
 *.pyc
 .venv/
+.venv-reranker/
 venv/
 env/
 
