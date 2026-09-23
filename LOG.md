@@ -256,3 +256,49 @@ double-holdout (train the reranker on one split, evaluate offline
 MRR@25 on a disjoint split) is required before this comparison could
 support a generalization claim, and remains a deferred future
 refinement per the design spec.
+
+## 2026-09-24
+
+### DreaMS embeddings spike (deferred, no code changes)
+
+**What:** Investigated feasibility of adding DreaMS (pretrained MS/MS
+spectrum transformer, https://github.com/pluskal-lab/DreaMS) embeddings
+as extra reranker features. Confirmed: MIT licensed, checkpoint publicly
+downloadable via Hugging Face Hub, all dependencies (torch==2.2.1,
+pyopenms==3.4.0, igraph, wandb, umap-learn, ~20 pinned packages total)
+install cleanly in a dedicated Python 3.11 venv — a THIRD isolated Python
+environment for this project (system 3.14, `.venv-reranker` 3.12 for
+AutoGluon, and this untracked throwaway 3.11 venv for DreaMS). Package
+import itself is fast (~26s cold). Embedding API
+(`dreams.api.dreams_embeddings`) takes spectra as MGF files, returns
+1024-dim vectors.
+
+**Blocker found:** the default embedding model requires downloading
+TWO separate large checkpoints (`embedding_model.ckpt`, ~1.18GB,
+confirmed downloaded successfully in 160s once retried in isolation; and
+a second `ssl_model.ckpt` of unknown size, download in progress when the
+spike was stopped) via Hugging Face Hub. Network conditions on the spike
+night were unusually slow/inconsistent for large-file HTTP downloads
+specifically (small packages installed at normal speed 4-8MB/s; large
+wheels like pyopenms and the checkpoints repeatedly stalled for many
+minutes before completing or needing a manual kill+retry). This was
+network flakiness, not a DreaMS code or environment defect — every
+"stall" resolved into real, if slow, progress when finally checked.
+
+**Decision:** deferred. Not worth continuing on this attempt given time
+already spent (~2.5 hours), but the path is understood and not
+structurally broken: (1) get both checkpoints downloaded in one
+uninterrupted session, ideally on better network or pre-fetched via
+browser/download manager rather than pip/hf_hub's slow-to-recover
+transfer, (2) no CPU throughput number was ever obtained — that
+measurement still needs to happen once checkpoints are in place, (3)
+consider running on Kaggle/Colab instead of local Windows, since that
+environment is pre-built, likely has faster/more reliable bandwidth to
+Hugging Face, and matches the cloud-GPU intent WORKFLOW.md already
+describes for this phase.
+
+**Cleanup:** all spike artifacts (Python 3.11 venv, cloned DreaMS repo,
+downloaded checkpoint, sample MGF file) were throwaway and removed after
+the spike — nothing was committed. Python 3.11 itself (installed via
+winget) was left on the machine since a future DreaMS attempt will need
+it again.
