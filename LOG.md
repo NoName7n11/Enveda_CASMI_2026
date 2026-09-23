@@ -302,3 +302,33 @@ downloaded checkpoint, sample MGF file) were throwaway and removed after
 the spike — nothing was committed. Python 3.11 itself (installed via
 winget) was left on the machine since a future DreaMS attempt will need
 it again.
+
+### Reranker double-holdout fix (bounded change)
+
+**What:** `Enveda_CASMI_local.ipynb` previously scored the baseline-vs-
+reranked MRR@25 comparison on the SAME `make_validation_split` output
+(`random_state=42`) used to train the reranker — an in-sample comparison
+per the earlier flagged limitation. Added a new cell drawing a fully
+independent held-out split (`make_validation_split(train_df,
+n_held_out=200, random_state=99)`) used only for the comparison, never
+seen during reranker training. No changes to `src/reranker.py` or
+`src/data.py` — `make_validation_split` and `build_training_examples`
+already supported this via existing parameters.
+
+**Why:** the previously reported +0.0339 MRR@25 delta was explicitly
+caveated as "not solid evidence of generalization" (per the final review
+during the reranker sub-project). This fix removes that caveat by
+construction — the reported delta now reflects genuine held-out
+performance, not memorization by the RandomForest/ExtraTrees/XGBoost
+ensemble on rows it trained on.
+
+**Result (real, independent double-holdout):** baseline MRR@25 = 0.3849,
+reranked MRR@25 = 0.3946, delta = **+0.0097** (~2.5% relative
+improvement). Smaller than the earlier in-sample +0.0339, as expected —
+that number was inflated by row overlap. This +0.0097 is the trustworthy
+number: the reranker provides a real, if modest, improvement over raw
+cosine-similarity ranking on spectra/molecules it never trained on.
+(Note baseline MRR@25 also differs slightly from the training split's
+0.4173 — 0.3849 here — because it's evaluated on a different random
+200-molecule sample, not because of any code change to the baseline
+itself.)
