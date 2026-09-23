@@ -46,3 +46,20 @@ the reusable spectrum-level split function later sub-projects (including
 this reranker) build on.
 
 ## 2026-09-23
+
+### Candidate feature extraction (`src/reranker.py::extract_candidate_features`)
+
+**What:** New function that re-runs the same precursor-mass/adduct
+filtering and cosine-similarity scoring as `src/baseline.py`, but
+returns a richer per-candidate row: cosine score, precursor ppm error,
+candidate peak count, and RDKit descriptors (molecular weight, LogP,
+ring count, rotatable bond count, H-bond donor/acceptor counts) computed
+from the candidate's SMILES.
+
+**Why:** `src/baseline.py::score_candidates_for_molecule` only returns
+`inchikey14`, `smiles`, `score` — not enough signal for a reranker to
+learn from. Rather than extending that function's return shape (which
+would touch already-shipped, already-reviewed code and risk regressing
+its existing callers/tests), a parallel function duplicates the
+filter+cosine loop. The duplication cost is small and isolates risk:
+`src/baseline.py` and its test suite are untouched by this sub-project.
