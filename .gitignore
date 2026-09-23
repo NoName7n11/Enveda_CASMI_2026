@@ -3,6 +3,7 @@ dataset/
 
 # Generated submission output
 submission.csv
+submission_reranked.csv
 
 # Model artifacts / checkpoints
 *.pt

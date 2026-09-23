@@ -332,3 +332,31 @@ cosine-similarity ranking on spectra/molecules it never trained on.
 0.4173 — 0.3849 here — because it's evaluated on a different random
 200-molecule sample, not because of any code change to the baseline
 itself.)
+
+### Reranked real submission (bounded change)
+
+**What:** added a new cell to `Enveda_CASMI_local.ipynb` that applies the
+trained reranker to the actual competition test set (`test_df`, 400
+molecules), reordering each molecule's candidates by predicted
+`is_correct` probability instead of raw cosine similarity, and writes
+the result to `submission_reranked.csv` (gitignored, not committed) —
+separate from the existing baseline-only `submission.csv` so both are
+available to compare before choosing which to submit.
+
+**Why:** the notebook already trained the reranker and validated it
+offline, but never produced an actual reranked submission file — the
+artifact that would actually get uploaded to Kaggle. Kept as a separate
+file rather than overwriting `submission.csv` so the baseline version
+stays available as a fallback/comparison point.
+
+**Result:** `submission_reranked.csv` written successfully, 400 rows,
+format-validated (unique molecule_id, no NaN smiles, ≤25 candidates per
+row). Took noticeably longer to generate than the offline validation
+runs (~40 minutes vs. a few minutes) because it scores every test
+molecule's candidates against the full 75k-row `train_df` pool (not a
+held-out validation subset) — this reflects the already-known quadratic
+`.iterrows()` cost in `extract_candidate_features`/`score_candidates_
+for_molecule` (flagged as a deferred optimization during the baseline
+and reranker sub-project reviews), now visibly showing up at full
+production scale. Worth optimizing before scaling further (e.g. to the
+competition's full ~2.5M-spectra train.parquet on Kaggle).
