@@ -220,6 +220,9 @@ def test_build_training_examples_labels_true_match_correctly():
         correct_rows = group[group["is_correct"] == 1]
         if len(correct_rows) > 0:
             assert correct_rows.iloc[0]["inchikey14"] == molecule_id
+    # For this fixture, every held-out molecule's own structure survives
+    # filtering (see comment above), so exactly one positive per molecule.
+    assert training_df.groupby("molecule_id")["is_correct"].sum().eq(1).all()
 
 
 def test_build_training_examples_empty_when_no_eligible_molecules():
@@ -310,6 +313,38 @@ def test_rerank_candidates_respects_top_k_smaller_than_pool(tmp_path):
     )
     result = rerank_candidates(predictor, training_df, feature_columns, top_k=1)
     assert len(result) == 1
+
+
+class _StubPredictor:
+    def predict_proba(self, X):
+        return pd.DataFrame({0: [0.9, 0.1, 0.5], 1: [0.1, 0.9, 0.5]})
+
+
+def test_rerank_candidates_selects_positive_class_by_name_not_position():
+    candidates = pd.DataFrame(
+        {"smiles": ["low_prob", "high_prob", "mid_prob"], "cosine_score": [0.1, 0.9, 0.5]}
+    )
+    feature_columns = ["cosine_score"]
+    result = rerank_candidates(_StubPredictor(), candidates, feature_columns, top_k=25)
+    assert result == ["high_prob", "mid_prob", "low_prob"]
+
+
+class _StubPredictorReversedColumns:
+    def predict_proba(self, X):
+        # Columns in [1, 0] order instead of [0, 1] -- proves selection is by
+        # name/membership check, not by position.
+        return pd.DataFrame({1: [0.1, 0.9, 0.5], 0: [0.9, 0.1, 0.5]})
+
+
+def test_rerank_candidates_column_selection_is_name_based_not_positional():
+    candidates = pd.DataFrame(
+        {"smiles": ["low_prob", "high_prob", "mid_prob"], "cosine_score": [0.1, 0.9, 0.5]}
+    )
+    feature_columns = ["cosine_score"]
+    result = rerank_candidates(
+        _StubPredictorReversedColumns(), candidates, feature_columns, top_k=25
+    )
+    assert result == ["high_prob", "mid_prob", "low_prob"]
 
 
 def test_rerank_candidates_fewer_candidates_than_top_k_returns_all(tmp_path):

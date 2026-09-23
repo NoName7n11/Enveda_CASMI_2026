@@ -111,7 +111,9 @@ logic itself is unaffected.
 
 **Known limitation (documented in spec, not fixed here):** training
 data and the offline-eval held-out split are currently the same split,
-so the "reranked MRR@25" comparison in Task 4 should be read as
+so the "reranked MRR@25" comparison in the Task 5 notebook (not the
+Task 4 integration test, which independently re-splits with a
+different `random_state=2` — see that entry below) should be read as
 somewhat optimistic/in-sample. A fully separate double-holdout is a
 deferred future refinement.
 
@@ -143,28 +145,15 @@ real trained predictor and confirmed it returns integer columns
 `probabilities[1]` genuinely selects the positive (`is_correct=1`)
 class rather than accidentally reading position 1 by luck.
 
-**Bug found and fixed in the brief's own Step 1 unit-test code (same
-root cause as Task 3's bug):** the brief's three new
-`test_rerank_candidates_*` tests called
-`build_training_examples(train_df, n_held_out=3, random_state=1)` with
-the default `ppm_tolerance=15.0` against `_make_synthetic_train_df()`.
-As Task 3's LOG entry above already documents for
-`test_train_reranker_fits_and_returns_predictor`, that fixture's three
-molecules have precursor_mz values (100/200/300) spaced far enough
-apart that the default tolerance leaves each held-out molecule's
-candidate pool containing only its own (always-correct) structure —
-producing a single-class ("is_correct" always 1) training set that
-AutoGluon's binary classifier cannot fit (`AssertionError: y does not
-contain exactly 2 unique values`). Verified by running the tests
-exactly as given in the brief first: all three failed with that
-AssertionError, not the expected `ImportError` used to confirm the
-tests were meaningfully red before implementation. Fixed the same way
-Task 3's existing (already-passing) test fixes it: pass
+**Bug found and fixed in the brief's own Step 1 unit-test code:** same
+root cause as Task 3's ppm-fixture issue (see Task 3 entry above for
+the full explanation) — the brief's three new `test_rerank_candidates_*`
+tests used the default `ppm_tolerance=15.0` against
+`_make_synthetic_train_df()`, producing a single-class training set
+AutoGluon's binary classifier cannot fit. Fixed the same way: pass
 `ppm_tolerance=1_000_000.0` to `build_training_examples` in all three
-new tests, so each molecule's candidate pool also picks up the other
-two (incorrect) structures. This is a test-fixture-construction detail
-only; `rerank_candidates`'s own logic is unaffected and required no
-changes beyond what the brief specified verbatim.
+new tests. Test-fixture-construction detail only; `rerank_candidates`'s
+own logic required no changes beyond what the brief specified verbatim.
 
 **Real-data integration test result:** ran against a 5,000-row sample
 of `dataset/train.parquet` (`n_held_out=20` for both training and the
@@ -192,52 +181,78 @@ disproving) that reranking helps. No reranked `submission.csv` variant
 was produced; that's an explicitly deferred follow-up once the
 comparison itself is validated as a real improvement.
 
-**Environment bug found and fixed (not in `src/reranker.py`, but a
-real blocker for this task):** the first three attempts to execute the
-notebook via
-`.venv-reranker\Scripts\python.exe -m jupyter nbconvert --execute`
-failed with `ModuleNotFoundError: No module named 'autogluon'` at the
-training cell, even though `autogluon.tabular` is verified installed
-in `.venv-reranker` and a direct `sys.executable` check inside the
-venv's own Python confirmed the venv python. Root cause: the
-notebook's `python3` kernelspec (`kernel.json`) had `argv[0]` set to
-the bare string `"python"` rather than an absolute path, so kernel
-launch resolved `python` via the OS `PATH` at spawn time — and `PATH`
-resolves to the system Python 3.14 install, not `.venv-reranker`,
-regardless of which Python executed the `jupyter nbconvert` command
-itself. Made worse by there being three independent copies of this
-same stale `kernel.json` on this machine (the worktree's own
-`.venv-reranker/share/jupyter/kernels/python3/`, a second physically
-separate `.venv-reranker` copy outside the worktree at the same
-relative path, and a system-wide one under
-`%APPDATA%\Python\share\jupyter\kernels\python3\` registered by the
-system Python 3.14 ipykernel install) — `nbconvert`'s `ExecutePreprocessor`
-was resolving kernel specs in a way that picked up the system copy even
-when `jupyter --paths` (run from the shell) reported the venv path
-first. Diagnosed by writing a minimal probe notebook that printed
-`sys.executable` before importing `autogluon.tabular`, confirming which
-kernel actually launched, then fixing all three `kernel.json` copies'
-`argv[0]` to the absolute `.venv-reranker\Scripts\python.exe` path
-before re-running. This is a local-machine Jupyter kernel registration
-issue, not a repo code bug — nothing in `src/reranker.py` or the
-notebook cells themselves needed changing once the kernelspec was
-fixed.
+**Environment note:** notebook execution repeatedly failed with
+`ModuleNotFoundError: No module named 'autogluon'` despite
+`autogluon.tabular` being installed in `.venv-reranker`. Root cause:
+the `python3` kernelspec's `kernel.json` had a stale/incorrect
+`argv[0]` (in one case a bare `"python"` resolving via `PATH` to the
+system Python 3.14; in a later fix wave, an absolute path missing the
+worktree segment, pointing at a separate `.venv-reranker` copy outside
+this worktree). Fixed each time by correcting `kernel.json`'s `argv[0]`
+to the worktree-local `.venv-reranker\Scripts\python.exe` absolute
+path. Local Jupyter kernel registration issue only — no repo code
+changed to fix it.
 
-**Result:** on the full 75,000-row sample (`n_held_out=200`,
-`random_state=42`, same split as the baseline cells above),
-`build_training_examples` produced 1,882 training rows (90 positive),
-and `train_reranker` fit within the 120s time limit. The printed
+### Final-review fix wave: labeling metric mismatch, missing gradient-boosted models, overstated result wording
+
+**What:** Fixed four Important + four Minor findings from the final
+whole-branch review. (1) `build_training_examples`'s labeling now
+compares `features["inchikey14"] == molecule_id` instead of exact
+SMILES string equality, matching the competition's actual scoring
+criterion (`mrr_at_25` matches by tautomer-canonicalized InChIKey14,
+not exact SMILES text — see `src/reranker.py` for the full comment).
+(2) Installed the missing optional AutoGluon dependencies
+(`autogluon.tabular[lightgbm,catboost,xgboost]==1.6.3`) so gradient-
+boosted models actually train instead of silently falling back to
+RandomForest/ExtraTrees only. (3) Added two new `tests/test_reranker.py`
+tests using a stub predictor with a fixed `predict_proba` output to
+assert `rerank_candidates` produces the exact correct order (not just
+"a valid permutation"), including a reversed-column-order stub proving
+selection is by column name, not position. (4) `train_reranker` now
+passes `eval_metric="roc_auc"` to `TabularPredictor` (given the ~4.8%
+positive rate, default accuracy-based model selection was nearly
+meaningless). Also strengthened the existing labeling test to assert
+exactly one positive per molecule, and added `matchms.set_matchms_logger_level("ERROR")`
+to the Task 5 setup cell to suppress repeated "No precursor_mz found"
+warning spam in cells 8-9's output (cells 1-5, from Task 1-3, are
+unchanged and still show the spam — out of scope for this fix wave).
+
+**Result — model types that trained:** after installing the optional
+dependencies and re-running the notebook, the AutoGluon leaderboard
+shows LightGBMXT, LightGBM, RandomForestGini, RandomForestEntr,
+CatBoost, ExtraTreesGini, ExtraTreesEntr, XGBoost, LightGBMLarge, and
+WeightedEnsemble_L2 all trained successfully (validation ROC-AUC
+0.989–0.997). Only NeuralNetFastAI and NeuralNetTorch still failed
+with `ImportError` (fastai/torch were not in this fix wave's scope —
+only lightgbm/catboost/xgboost were requested). Best model:
+`WeightedEnsemble_L2`, with `Ensemble Weights: {'XGBoost': 1.0}` (i.e.
+the ensemble selected pure XGBoost as its best single model this run).
+
+**Result — corrected MRR@25 numbers:** on the same full 75,000-row
+sample (`n_held_out=200`, `random_state=42`), with the corrected
+InChIKey14-based labeling and the newly-available gradient-boosted
+models, `build_training_examples` produced 1,882 training rows (91
+positive — one more than the previous run's 90, since the labeling fix
+changes which candidate rows are counted correct). The printed
 side-by-side comparison on the held-out validation split:
 
 ```
 Baseline-only MRR@25:  0.4173
-Reranked MRR@25:       0.4487
-Delta:                 +0.0314
+Reranked MRR@25:       0.4512
+Delta:                 +0.0339
 ```
 
-The reranker improves offline MRR@25 by +0.0314 (about +7.5% relative)
-over the cosine-only baseline on this in-sample comparison — a real,
-if modest, improvement, consistent with the notebook's own printed
-caveat that training data and this held-out split share the same
-`make_validation_split` call, so the comparison is somewhat
-optimistic/in-sample rather than a fully independent double-holdout.
+**Honest interpretation of this result (correcting prior overstated
+wording):** the reranked MRR@25 is higher than baseline on this run,
+but training data and the offline-eval split share the same rows (full
+train/eval row overlap per `make_validation_split` — a known,
+already-documented limitation), and the models that actually trained
+(RandomForest/ExtraTrees, and now also LightGBM/CatBoost/XGBoost/their
+ensemble) can memorize training rows closely at this data scale. So
+this delta is **not** solid evidence of true generalization — it
+should be read as a smoke-test signal that the reranking mechanism
+works end-to-end, not as a validated improvement. A fully independent
+double-holdout (train the reranker on one split, evaluate offline
+MRR@25 on a disjoint split) is required before this comparison could
+support a generalization claim, and remains a deferred future
+refinement per the design spec.

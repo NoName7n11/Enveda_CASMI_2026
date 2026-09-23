@@ -94,10 +94,13 @@ def build_training_examples(
 ) -> pd.DataFrame:
     """Build a labeled training set for the reranker from held-out molecules.
 
-    Uses make_validation_split to get held-out query molecules and their
-    ground truth, extracts candidate features for each, and labels each
-    candidate row is_correct=1 if its smiles matches that molecule's
-    ground-truth normalized_smiles, else 0.
+    Uses make_validation_split to get held-out query molecules, extracts
+    candidate features for each, and labels each candidate row
+    is_correct=1 if its inchikey14 matches that molecule's molecule_id
+    (which IS the held-out molecule's true inchikey14), else 0. This
+    matches the competition's actual scoring criterion (InChIKey14
+    equality, see src/metric.py::mrr_at_25) rather than exact SMILES
+    string equality.
     """
     val_query_df, val_train_df, val_ground_truth = make_validation_split(
         train_df, n_held_out=n_held_out, random_state=random_state
@@ -110,12 +113,18 @@ def build_training_examples(
             continue
         features = features.copy()
         features["molecule_id"] = molecule_id
-        # val_ground_truth maps molecule_id -> normalized_smiles (see
-        # src.data.make_validation_split docstring), so the match must be
-        # against the candidate's smiles column, not inchikey14 -- comparing
-        # against inchikey14 here would silently label every row 0.
-        true_smiles = val_ground_truth[molecule_id]
-        features["is_correct"] = (features["smiles"] == true_smiles).astype(int)
+        # Label by InChIKey14 equality against molecule_id, not by exact
+        # SMILES string match. molecule_id IS the held-out molecule's
+        # inchikey14 (see src.data.make_validation_split, where
+        # val_query_df["molecule_id"] = val_query_df["inchikey14"]), and the
+        # competition's actual scoring metric (src/metric.py::mrr_at_25)
+        # matches by tautomer-canonicalized InChIKey14, not exact SMILES
+        # text (stereo/tautomer differences are not penalized per
+        # OVERVIEW.md). Comparing against exact SMILES here would be
+        # stricter than the real scoring criterion, incorrectly labeling a
+        # candidate wrong when it's the same structure but a different
+        # tautomer/stereo-variant SMILES string.
+        features["is_correct"] = (features["inchikey14"] == molecule_id).astype(int)
         all_rows.append(features)
 
     if not all_rows:
@@ -142,7 +151,7 @@ def train_reranker(
     from autogluon.tabular import TabularPredictor
 
     predictor = TabularPredictor(
-        label=label_column, path=model_path, problem_type="binary"
+        label=label_column, path=model_path, problem_type="binary", eval_metric="roc_auc"
     )
     predictor.fit(training_df[feature_columns + [label_column]], time_limit=time_limit)
     return predictor
