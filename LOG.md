@@ -360,3 +360,33 @@ for_molecule` (flagged as a deferred optimization during the baseline
 and reranker sub-project reviews), now visibly showing up at full
 production scale. Worth optimizing before scaling further (e.g. to the
 competition's full ~2.5M-spectra train.parquet on Kaggle).
+
+### Fixed the quadratic candidate-scoring cost (bounded change)
+
+**What:** in both `src/baseline.py::score_candidates_for_molecule` and
+`src/reranker.py::extract_candidate_features`, added caching so each
+candidate's `matchms.Spectrum` object (and, in the reranker path, its
+RDKit descriptors) is built at most once per molecule instead of once
+per (test spectrum, candidate) pair. Candidates are re-filtered per test
+spectrum since the ppm/adduct window depends on the test row, but the
+same `train_df` row (and the same SMILES) frequently reappears across a
+molecule's multiple spectra — that repeated, redundant object
+construction was the actual bottleneck, not the cosine scoring itself.
+Purely additive caching, no change to filtering, scoring, or
+aggregation logic.
+
+**Why:** the previous entry's ~40-minute reranked-submission run made
+this cost visible at production scale. Rather than a bigger rewrite
+(e.g. matchms's batch `CosineGreedy.matrix()` API), the caching fix is
+low-risk (behavior-preserving, existing test suite as the safety net)
+and targets the actual redundant work directly.
+
+**Result:** timed `build_submission` on a 20-molecule subset of
+`test_df` against the full 75k-row `train_df`: 3.57s total (0.179s/
+molecule), extrapolating to ~1.2 minutes for the full 400-molecule test
+set — down from the ~40 minutes observed before this fix. All 41 tests
+still pass unchanged (27 under system Python 3.14 for `src/baseline.py`,
+41 under `.venv-reranker`'s Python 3.12 for the full suite including
+`src/reranker.py`), confirming the optimization didn't alter any scoring
+behavior. This scale of improvement matters directly for eventually
+running against the competition's full ~2.5M-spectra `train.parquet`.

@@ -5,7 +5,7 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors, Lipinski
 
-from src.baseline import filter_candidates, to_matchms_spectrum, cosine_similarity
+from src.baseline import Spectrum, filter_candidates, to_matchms_spectrum, cosine_similarity
 from src.data import make_validation_split
 
 _FEATURE_COLUMNS = [
@@ -44,6 +44,13 @@ def extract_candidate_features(
     """
     best_score: dict[str, float] = {}
     best_row: dict[str, dict] = {}
+    # Candidates are re-filtered per test spectrum, but the same train_df
+    # row and the same SMILES often reappear across a molecule's multiple
+    # spectra. Cache the built Spectrum (by train_df index) and the RDKit
+    # descriptors (by SMILES) so each is computed at most once per molecule
+    # instead of once per (test spectrum, candidate) pair.
+    candidate_spectrum_cache: dict[int, Spectrum] = {}
+    descriptor_cache: dict[str, dict] = {}
 
     for _, test_row in test_spectra_rows.iterrows():
         candidates = filter_candidates(test_row, train_df, ppm_tolerance=ppm_tolerance)
@@ -52,12 +59,14 @@ def extract_candidate_features(
         test_spectrum = to_matchms_spectrum(
             test_row["ms2_mzs"], test_row["ms2_normalized_intensities"], metadata={}
         )
-        for _, candidate_row in candidates.iterrows():
-            candidate_spectrum = to_matchms_spectrum(
-                candidate_row["ms2_mzs"],
-                candidate_row["ms2_normalized_intensities"],
-                metadata={},
-            )
+        for candidate_idx, candidate_row in candidates.iterrows():
+            if candidate_idx not in candidate_spectrum_cache:
+                candidate_spectrum_cache[candidate_idx] = to_matchms_spectrum(
+                    candidate_row["ms2_mzs"],
+                    candidate_row["ms2_normalized_intensities"],
+                    metadata={},
+                )
+            candidate_spectrum = candidate_spectrum_cache[candidate_idx]
             score = cosine_similarity(test_spectrum, candidate_spectrum)
             key = candidate_row["inchikey14"]
             if score > best_score.get(key, -1.0):
@@ -70,14 +79,16 @@ def extract_candidate_features(
                 num_peaks = candidate_row.get("num_peaks")
                 if num_peaks is None or pd.isna(num_peaks):
                     num_peaks = len(candidate_row["ms2_mzs"])
-                descriptors = _rdkit_descriptors(candidate_row["normalized_smiles"])
+                smiles = candidate_row["normalized_smiles"]
+                if smiles not in descriptor_cache:
+                    descriptor_cache[smiles] = _rdkit_descriptors(smiles)
                 best_row[key] = {
                     "inchikey14": key,
-                    "smiles": candidate_row["normalized_smiles"],
+                    "smiles": smiles,
                     "cosine_score": score,
                     "ppm_error": ppm_error,
                     "num_peaks_candidate": num_peaks,
-                    **descriptors,
+                    **descriptor_cache[smiles],
                 }
 
     if not best_row:

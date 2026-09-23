@@ -54,6 +54,12 @@ def score_candidates_for_molecule(
     """
     best_score: dict[str, float] = {}
     best_smiles: dict[str, str] = {}
+    # Candidates are re-filtered per test spectrum (the ppm/adduct window
+    # depends on the test row), but the same train_df row often reappears
+    # across a molecule's multiple spectra. Cache each candidate's Spectrum
+    # by its train_df index so it's built at most once per molecule instead
+    # of once per (test spectrum, candidate) pair.
+    candidate_spectrum_cache: dict[int, Spectrum] = {}
 
     for _, test_row in test_spectra_rows.iterrows():
         candidates = filter_candidates(test_row, train_df, ppm_tolerance=ppm_tolerance)
@@ -62,12 +68,14 @@ def score_candidates_for_molecule(
         test_spectrum = to_matchms_spectrum(
             test_row["ms2_mzs"], test_row["ms2_normalized_intensities"], metadata={}
         )
-        for _, candidate_row in candidates.iterrows():
-            candidate_spectrum = to_matchms_spectrum(
-                candidate_row["ms2_mzs"],
-                candidate_row["ms2_normalized_intensities"],
-                metadata={},
-            )
+        for candidate_idx, candidate_row in candidates.iterrows():
+            if candidate_idx not in candidate_spectrum_cache:
+                candidate_spectrum_cache[candidate_idx] = to_matchms_spectrum(
+                    candidate_row["ms2_mzs"],
+                    candidate_row["ms2_normalized_intensities"],
+                    metadata={},
+                )
+            candidate_spectrum = candidate_spectrum_cache[candidate_idx]
             score = cosine_similarity(test_spectrum, candidate_spectrum)
             key = candidate_row["inchikey14"]
             if score > best_score.get(key, -1.0):
