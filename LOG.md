@@ -176,3 +176,68 @@ held-out molecules, many likely with small or single-candidate pools
 where reordering can't change the top-1 pick) and is consistent with
 the brief's smoke-test framing — this test asserts pipeline validity,
 not a score improvement threshold.
+
+### Wired into notebook: baseline vs. reranked MRR@25 comparison
+
+**What:** Added cells to `Enveda_CASMI_local.ipynb` training the
+reranker on the sampled train set and printing baseline-only MRR@25
+alongside reranked MRR@25 on the same held-out split, with the delta.
+Model artifact saved to `./autogluon_reranker_model` (gitignored, not
+committed — matches the existing `models/`/`checkpoints/` gitignore
+pattern intent).
+
+**Why:** This is sub-project 2's actual deliverable per the spec's
+success criterion — a direct, printed comparison proving (or
+disproving) that reranking helps. No reranked `submission.csv` variant
+was produced; that's an explicitly deferred follow-up once the
+comparison itself is validated as a real improvement.
+
+**Environment bug found and fixed (not in `src/reranker.py`, but a
+real blocker for this task):** the first three attempts to execute the
+notebook via
+`.venv-reranker\Scripts\python.exe -m jupyter nbconvert --execute`
+failed with `ModuleNotFoundError: No module named 'autogluon'` at the
+training cell, even though `autogluon.tabular` is verified installed
+in `.venv-reranker` and a direct `sys.executable` check inside the
+venv's own Python confirmed the venv python. Root cause: the
+notebook's `python3` kernelspec (`kernel.json`) had `argv[0]` set to
+the bare string `"python"` rather than an absolute path, so kernel
+launch resolved `python` via the OS `PATH` at spawn time — and `PATH`
+resolves to the system Python 3.14 install, not `.venv-reranker`,
+regardless of which Python executed the `jupyter nbconvert` command
+itself. Made worse by there being three independent copies of this
+same stale `kernel.json` on this machine (the worktree's own
+`.venv-reranker/share/jupyter/kernels/python3/`, a second physically
+separate `.venv-reranker` copy outside the worktree at the same
+relative path, and a system-wide one under
+`%APPDATA%\Python\share\jupyter\kernels\python3\` registered by the
+system Python 3.14 ipykernel install) — `nbconvert`'s `ExecutePreprocessor`
+was resolving kernel specs in a way that picked up the system copy even
+when `jupyter --paths` (run from the shell) reported the venv path
+first. Diagnosed by writing a minimal probe notebook that printed
+`sys.executable` before importing `autogluon.tabular`, confirming which
+kernel actually launched, then fixing all three `kernel.json` copies'
+`argv[0]` to the absolute `.venv-reranker\Scripts\python.exe` path
+before re-running. This is a local-machine Jupyter kernel registration
+issue, not a repo code bug — nothing in `src/reranker.py` or the
+notebook cells themselves needed changing once the kernelspec was
+fixed.
+
+**Result:** on the full 75,000-row sample (`n_held_out=200`,
+`random_state=42`, same split as the baseline cells above),
+`build_training_examples` produced 1,882 training rows (90 positive),
+and `train_reranker` fit within the 120s time limit. The printed
+side-by-side comparison on the held-out validation split:
+
+```
+Baseline-only MRR@25:  0.4173
+Reranked MRR@25:       0.4487
+Delta:                 +0.0314
+```
+
+The reranker improves offline MRR@25 by +0.0314 (about +7.5% relative)
+over the cosine-only baseline on this in-sample comparison — a real,
+if modest, improvement, consistent with the notebook's own printed
+caveat that training data and this held-out split share the same
+`make_validation_split` call, so the comparison is somewhat
+optimistic/in-sample rather than a fully independent double-holdout.
