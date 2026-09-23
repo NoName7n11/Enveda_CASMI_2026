@@ -390,3 +390,33 @@ still pass unchanged (27 under system Python 3.14 for `src/baseline.py`,
 `src/reranker.py`), confirming the optimization didn't alter any scoring
 behavior. This scale of improvement matters directly for eventually
 running against the competition's full ~2.5M-spectra `train.parquet`.
+
+### Scaled sample_size 75k → 300k, re-ran full pipeline (bounded change)
+
+**What:** with candidate scoring now ~35x faster, bumped
+`load_sampled_train(sample_size=...)` from 75,000 to 300,000 rows in
+the notebook (single parameter change, no other code touched) and
+re-executed the full pipeline end to end: offline baseline validation,
+reranker training, independent double-holdout comparison, and both
+real submission files (baseline-only and reranked).
+
+**Why:** more unique training structures should let the reranker learn
+a more general is_correct/is_incorrect boundary, and the earlier 75k
+result was itself artificially constrained by how slow scoring was
+before the caching fix — this was the natural next lever to pull.
+
+**Result:** at 300k rows (144,532 unique structures, up from 75k's
+~52,730), reranker training set grew from 1,882 rows/90 positive to
+**5,963 rows/97 positive**. Independent double-holdout comparison:
+baseline MRR@25 = 0.3883, reranked MRR@25 = **0.4335**, delta =
+**+0.0453** (~11.7% relative improvement) — a substantially larger,
+still-genuine (disjoint-split) improvement than the 75k run's +0.0097
+(~2.5%). More training data measurably helped the reranker generalize
+better, not just fit more closely. Both `submission.csv` and
+`submission_reranked.csv` regenerated successfully (400 rows each,
+format-validated). All 41 tests still passing. Total notebook run time
+was longer than 75k scale (network/computation naturally scales with
+4x the candidate pool per query), but nowhere near prohibitive — this
+result came from a single overnight-adjacent run, not a multi-day
+wait, confirming scaling further (e.g. toward the full ~2.5M-spectra
+dataset) remains a viable next step rather than a dead end.
