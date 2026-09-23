@@ -63,3 +63,54 @@ would touch already-shipped, already-reviewed code and risk regressing
 its existing callers/tests), a parallel function duplicates the
 filter+cosine loop. The duplication cost is small and isolates risk:
 `src/baseline.py` and its test suite are untouched by this sub-project.
+
+### Training example builder + AutoGluon training (`build_training_examples`, `train_reranker`)
+
+**What:** `build_training_examples` reuses `make_validation_split`
+(already built for baseline offline validation) to get held-out query
+molecules and ground truth, extracts candidate features for each via
+`extract_candidate_features`, and labels every candidate row
+`is_correct` (1 if it matches the molecule's true structure, else 0).
+`train_reranker` wraps `autogluon.tabular.TabularPredictor` as a binary
+classifier over these labeled rows.
+
+**Why:** Reusing `make_validation_split` means the reranker's training
+data and the baseline's offline-eval split share one definition — no
+duplicated split logic, and both sub-projects benefit from any future
+fix to that function. Framing this as binary classification
+(`is_correct` per candidate row) rather than a learning-to-rank
+objective is a deliberate v0 simplification: AutoGluon's tabular
+binary-classification path is simpler to set up and debug than its
+ranking support, and `predict_proba` gives a usable ranking signal
+directly. A different acceptable approach for a small candidate pool
+per molecule.
+
+**Bug found and fixed during implementation:** `make_validation_split`'s
+`val_ground_truth` dict maps `molecule_id -> normalized_smiles` (per its
+own docstring), not `-> inchikey14`. The task brief's reference labeling
+code compared `features["inchikey14"] == val_ground_truth[molecule_id]`
+— an inchikey14 string can never equal a SMILES string, so every row
+would have been silently labeled `is_correct=0`, training the model on
+uniformly-wrong (all-negative) labels with no visible error. Fixed by
+comparing `features["smiles"]` (the candidate's `normalized_smiles`,
+already extracted by `extract_candidate_features`) against
+`val_ground_truth[molecule_id]` instead. Verified directly: before the
+fix, the synthetic 3-molecule fixture produced `is_correct` summing to
+0 across all rows; after the fix, it correctly summed to 3 (one true
+match per held-out molecule). This also meant the brief's exact test
+fixture for `test_train_reranker_fits_and_returns_predictor` (default
+`ppm_tolerance=15.0`, precursor_mz values 100/200/300) produces a
+single-class ("always 1") training set once labeling is correct, since
+each molecule's candidate pool only ever contains its own structure —
+AutoGluon's binary classifier cannot fit on one class. That test was
+adjusted to pass a much wider `ppm_tolerance` so each molecule's
+candidate pool also picks up the other two (incorrect) structures,
+producing the 2-class label distribution AutoGluon requires. This is a
+test-construction detail only; `build_training_examples`'s labeling
+logic itself is unaffected.
+
+**Known limitation (documented in spec, not fixed here):** training
+data and the offline-eval held-out split are currently the same split,
+so the "reranked MRR@25" comparison in Task 4 should be read as
+somewhat optimistic/in-sample. A fully separate double-holdout is a
+deferred future refinement.

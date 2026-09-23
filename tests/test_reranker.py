@@ -173,3 +173,84 @@ def test_extract_candidate_features_max_aggregates_across_test_spectra():
     result = extract_candidate_features(test_spectra_rows, train_df, ppm_tolerance=15.0)
     assert len(result) == 1
     assert result.iloc[0]["cosine_score"] == pytest.approx(1.0, abs=1e-6)
+
+
+from src.reranker import build_training_examples, train_reranker
+
+
+def _make_synthetic_train_df():
+    # 3 molecules, each with 2 spectra (eligible for held-out split),
+    # distinct precursor_mz/adduct groups so filter_candidates separates them cleanly.
+    rows = []
+    specs = [
+        ("AAAAAAAAAAAAAA", "CCO", 100.0, [100.0, 101.0]),
+        ("BBBBBBBBBBBBBB", "CCC", 200.0, [200.0, 201.0]),
+        ("CCCCCCCCCCCCCC", "CCCC", 300.0, [300.0, 301.0]),
+    ]
+    for key, smiles, mz, peak_variants in specs:
+        for i, peak in enumerate([mz, mz]):  # 2 spectra per molecule
+            rows.append(
+                {
+                    "molecule_id": key,
+                    "spectrum_id": f"{key}_s{i}",
+                    "inchikey14": key,
+                    "normalized_smiles": smiles,
+                    "adduct": "[M+H]+",
+                    "precursor_mz": mz,
+                    "num_peaks": 1,
+                    "ms2_mzs": np.array([peak]),
+                    "ms2_normalized_intensities": np.array([1.0]),
+                    "instrument_type": "timsTOF",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_build_training_examples_labels_true_match_correctly():
+    train_df = _make_synthetic_train_df()
+    training_df = build_training_examples(train_df, n_held_out=3, random_state=1)
+    assert "is_correct" in training_df.columns
+    assert "molecule_id" in training_df.columns
+    # every row's is_correct must be 0 or 1
+    assert set(training_df["is_correct"].unique()) <= {0, 1}
+    # for each molecule_id, exactly the row whose inchikey14 matches its own
+    # molecule_id (ground truth is keyed by inchikey14 in this synthetic setup)
+    # should be labeled 1, if that molecule's own structure survived filtering
+    for molecule_id, group in training_df.groupby("molecule_id"):
+        correct_rows = group[group["is_correct"] == 1]
+        if len(correct_rows) > 0:
+            assert correct_rows.iloc[0]["inchikey14"] == molecule_id
+
+
+def test_build_training_examples_empty_when_no_eligible_molecules():
+    # all single-spectrum molecules -> none eligible for held-out split
+    train_df = _make_synthetic_train_df().drop_duplicates("molecule_id")
+    training_df = build_training_examples(train_df, n_held_out=3, random_state=1)
+    assert len(training_df) == 0
+    assert "is_correct" in training_df.columns
+
+
+def test_train_reranker_fits_and_returns_predictor(tmp_path):
+    train_df = _make_synthetic_train_df()
+    # A wide ppm_tolerance is used here (rather than the 15.0 default) so
+    # that each held-out molecule's candidate pool also picks up the other
+    # two molecules' structures as (incorrect) candidates. With the default
+    # tolerance, each molecule's precursor_mz is >15ppm from the others, so
+    # every molecule's candidate pool would contain only its own (always
+    # correct) structure -- producing a single-class ("is_correct" always 1)
+    # training set that AutoGluon's binary classifier cannot fit on. This is
+    # purely a training-set-construction detail of this test; the labeling
+    # logic itself (see build_training_examples) is unaffected.
+    training_df = build_training_examples(
+        train_df, n_held_out=3, random_state=1, ppm_tolerance=1_000_000.0
+    )
+    feature_columns = [
+        "cosine_score", "ppm_error", "num_peaks_candidate",
+        "mol_wt", "log_p", "num_rings", "num_rotatable_bonds", "num_hbd", "num_hba",
+    ]
+    predictor = train_reranker(
+        training_df, model_path=str(tmp_path / "model"),
+        feature_columns=feature_columns, time_limit=10,
+    )
+    predictions = predictor.predict_proba(training_df[feature_columns])
+    assert 1 in predictions.columns or True in predictions.columns

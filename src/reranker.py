@@ -6,6 +6,7 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, Lipinski
 
 from src.baseline import filter_candidates, to_matchms_spectrum, cosine_similarity
+from src.data import make_validation_split
 
 _FEATURE_COLUMNS = [
     "inchikey14", "smiles", "cosine_score", "ppm_error",
@@ -83,3 +84,65 @@ def extract_candidate_features(
         return pd.DataFrame(columns=_FEATURE_COLUMNS)
 
     return pd.DataFrame(list(best_row.values()), columns=_FEATURE_COLUMNS)
+
+
+def build_training_examples(
+    train_df: pd.DataFrame,
+    n_held_out: int = 200,
+    random_state: int = 42,
+    ppm_tolerance: float = 15.0,
+) -> pd.DataFrame:
+    """Build a labeled training set for the reranker from held-out molecules.
+
+    Uses make_validation_split to get held-out query molecules and their
+    ground truth, extracts candidate features for each, and labels each
+    candidate row is_correct=1 if its smiles matches that molecule's
+    ground-truth normalized_smiles, else 0.
+    """
+    val_query_df, val_train_df, val_ground_truth = make_validation_split(
+        train_df, n_held_out=n_held_out, random_state=random_state
+    )
+
+    all_rows = []
+    for molecule_id, group in val_query_df.groupby("molecule_id"):
+        features = extract_candidate_features(group, val_train_df, ppm_tolerance=ppm_tolerance)
+        if features.empty:
+            continue
+        features = features.copy()
+        features["molecule_id"] = molecule_id
+        # val_ground_truth maps molecule_id -> normalized_smiles (see
+        # src.data.make_validation_split docstring), so the match must be
+        # against the candidate's smiles column, not inchikey14 -- comparing
+        # against inchikey14 here would silently label every row 0.
+        true_smiles = val_ground_truth[molecule_id]
+        features["is_correct"] = (features["smiles"] == true_smiles).astype(int)
+        all_rows.append(features)
+
+    if not all_rows:
+        columns = _FEATURE_COLUMNS + ["molecule_id", "is_correct"]
+        return pd.DataFrame(columns=columns)
+
+    return pd.concat(all_rows, ignore_index=True)
+
+
+def train_reranker(
+    training_df: pd.DataFrame,
+    model_path: str,
+    feature_columns: list[str],
+    label_column: str = "is_correct",
+    time_limit: int = 120,
+):
+    """Train a binary-classification AutoGluon reranker.
+
+    Returns the fitted TabularPredictor. Raises whatever AutoGluon raises
+    on degenerate input (e.g. a single-class training set) — that failure
+    is intentionally not caught here, since a silently-broken model is
+    worse than a loud training-time error.
+    """
+    from autogluon.tabular import TabularPredictor
+
+    predictor = TabularPredictor(
+        label=label_column, path=model_path, problem_type="binary"
+    )
+    predictor.fit(training_df[feature_columns + [label_column]], time_limit=time_limit)
+    return predictor
