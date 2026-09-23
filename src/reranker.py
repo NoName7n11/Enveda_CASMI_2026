@@ -146,3 +146,25 @@ def train_reranker(
     )
     predictor.fit(training_df[feature_columns + [label_column]], time_limit=time_limit)
     return predictor
+
+
+def rerank_candidates(
+    predictor, candidate_features_df: pd.DataFrame, feature_columns: list[str], top_k: int = 25
+) -> list[str]:
+    """Reorder candidates by the trained reranker's predicted match probability.
+
+    Returns up to top_k SMILES strings, highest predicted probability first.
+    Explicitly selects the probability of the positive class (is_correct=1)
+    rather than assuming column position, since AutoGluon's predict_proba
+    column order is not guaranteed to be [0, 1].
+    """
+    if candidate_features_df.empty:
+        return []
+
+    probabilities = predictor.predict_proba(candidate_features_df[feature_columns])
+    positive_class_probs = probabilities[1] if 1 in probabilities.columns else probabilities[True]
+
+    ranked = candidate_features_df.assign(_positive_prob=positive_class_probs.values).sort_values(
+        "_positive_prob", ascending=False
+    )
+    return ranked["smiles"].head(top_k).tolist()

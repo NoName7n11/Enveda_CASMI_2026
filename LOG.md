@@ -114,3 +114,65 @@ data and the offline-eval held-out split are currently the same split,
 so the "reranked MRR@25" comparison in Task 4 should be read as
 somewhat optimistic/in-sample. A fully separate double-holdout is a
 deferred future refinement.
+
+### Reranking at inference + real-data integration test (`rerank_candidates`)
+
+**What:** `rerank_candidates` takes a trained predictor and a molecule's
+candidate features, reorders by predicted `is_correct=1` probability
+(explicitly selecting that column rather than assuming position 1 in
+`predict_proba`'s output, since AutoGluon does not guarantee column
+order), and returns up to `top_k` SMILES. Added
+`tests/test_reranker_integration.py`, mirroring the baseline pipeline's
+Task 4 pattern: trains and reranks against a real (small) sample of
+`dataset/train.parquet` to catch real-data surprises before touching
+the notebook.
+
+**Why:** The predict_proba column-order guard is not optional —
+silently reading the wrong column would invert every ranking without
+raising any error, the worst kind of bug for a scoring pipeline. The
+real-data integration test exists for the same reason Task 4 of the
+baseline plan added one: synthetic unit-test fixtures don't exercise
+real schema quirks (dtypes, missing columns, AutoGluon's own
+data-validation behavior) that only show up against the actual parquet
+files.
+
+**Verified column selection directly (not just trusted the guard
+logic):** printed `predictor.predict_proba(...).columns` against a
+real trained predictor and confirmed it returns integer columns
+`[0, 1]` (matching `predictor.class_labels == [0, 1]`), so
+`probabilities[1]` genuinely selects the positive (`is_correct=1`)
+class rather than accidentally reading position 1 by luck.
+
+**Bug found and fixed in the brief's own Step 1 unit-test code (same
+root cause as Task 3's bug):** the brief's three new
+`test_rerank_candidates_*` tests called
+`build_training_examples(train_df, n_held_out=3, random_state=1)` with
+the default `ppm_tolerance=15.0` against `_make_synthetic_train_df()`.
+As Task 3's LOG entry above already documents for
+`test_train_reranker_fits_and_returns_predictor`, that fixture's three
+molecules have precursor_mz values (100/200/300) spaced far enough
+apart that the default tolerance leaves each held-out molecule's
+candidate pool containing only its own (always-correct) structure —
+producing a single-class ("is_correct" always 1) training set that
+AutoGluon's binary classifier cannot fit (`AssertionError: y does not
+contain exactly 2 unique values`). Verified by running the tests
+exactly as given in the brief first: all three failed with that
+AssertionError, not the expected `ImportError` used to confirm the
+tests were meaningfully red before implementation. Fixed the same way
+Task 3's existing (already-passing) test fixes it: pass
+`ppm_tolerance=1_000_000.0` to `build_training_examples` in all three
+new tests, so each molecule's candidate pool also picks up the other
+two (incorrect) structures. This is a test-fixture-construction detail
+only; `rerank_candidates`'s own logic is unaffected and required no
+changes beyond what the brief specified verbatim.
+
+**Real-data integration test result:** ran against a 5,000-row sample
+of `dataset/train.parquet` (`n_held_out=20` for both training and the
+independent eval split). Completed in ~85s. Printed
+`Baseline MRR@25: 0.8000, Reranked MRR@25: 0.8000` — both scores
+valid (0.0-1.0) and the pipeline ran end to end without error. The two
+scores landing exactly equal here is plausible at this sample size (20
+held-out molecules, many likely with small or single-candidate pools
+where reordering can't change the top-1 pick) and is consistent with
+the brief's smoke-test framing — this test asserts pipeline validity,
+not a score improvement threshold.

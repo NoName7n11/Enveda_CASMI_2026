@@ -254,3 +254,80 @@ def test_train_reranker_fits_and_returns_predictor(tmp_path):
     )
     predictions = predictor.predict_proba(training_df[feature_columns])
     assert 1 in predictions.columns or True in predictions.columns
+
+
+from src.reranker import rerank_candidates
+
+
+def test_rerank_candidates_orders_by_predicted_probability(tmp_path):
+    train_df = _make_synthetic_train_df()
+    # A wide ppm_tolerance is used (rather than the 15.0 default) for the
+    # same reason as test_train_reranker_fits_and_returns_predictor above:
+    # with the default tolerance each held-out molecule's candidate pool
+    # only ever contains its own (always-correct) structure, producing a
+    # single-class ("is_correct" always 1) training set that AutoGluon's
+    # binary classifier cannot fit on.
+    training_df = build_training_examples(
+        train_df, n_held_out=3, random_state=1, ppm_tolerance=1_000_000.0
+    )
+    feature_columns = [
+        "cosine_score", "ppm_error", "num_peaks_candidate",
+        "mol_wt", "log_p", "num_rings", "num_rotatable_bonds", "num_hbd", "num_hba",
+    ]
+    predictor = train_reranker(
+        training_df, model_path=str(tmp_path / "model2"),
+        feature_columns=feature_columns, time_limit=10,
+    )
+    # Build a candidate set with a clear "obviously correct" row (matches
+    # the pattern the model was trained to recognize as is_correct=1-like)
+    # and a clear "obviously wrong" row, then check ordering is a valid
+    # permutation weighted by predicted probability (not asserting exact
+    # scores, since AutoGluon's exact output isn't deterministic enough
+    # to pin — asserting the function returns a valid ranked list of the
+    # right length and content is the meaningful check here).
+    candidates = training_df[training_df["molecule_id"] == training_df["molecule_id"].iloc[0]]
+    result = rerank_candidates(predictor, candidates, feature_columns, top_k=25)
+    assert isinstance(result, list)
+    assert len(result) == len(candidates)
+    assert set(result) == set(candidates["smiles"])
+
+
+def test_rerank_candidates_respects_top_k_smaller_than_pool(tmp_path):
+    train_df = _make_synthetic_train_df()
+    # See comment in test_rerank_candidates_orders_by_predicted_probability
+    # above: a wide ppm_tolerance is required to avoid a single-class
+    # training set with this synthetic fixture.
+    training_df = build_training_examples(
+        train_df, n_held_out=3, random_state=1, ppm_tolerance=1_000_000.0
+    )
+    feature_columns = [
+        "cosine_score", "ppm_error", "num_peaks_candidate",
+        "mol_wt", "log_p", "num_rings", "num_rotatable_bonds", "num_hbd", "num_hba",
+    ]
+    predictor = train_reranker(
+        training_df, model_path=str(tmp_path / "model3"),
+        feature_columns=feature_columns, time_limit=10,
+    )
+    result = rerank_candidates(predictor, training_df, feature_columns, top_k=1)
+    assert len(result) == 1
+
+
+def test_rerank_candidates_fewer_candidates_than_top_k_returns_all(tmp_path):
+    train_df = _make_synthetic_train_df()
+    # See comment in test_rerank_candidates_orders_by_predicted_probability
+    # above: a wide ppm_tolerance is required to avoid a single-class
+    # training set with this synthetic fixture.
+    training_df = build_training_examples(
+        train_df, n_held_out=3, random_state=1, ppm_tolerance=1_000_000.0
+    )
+    feature_columns = [
+        "cosine_score", "ppm_error", "num_peaks_candidate",
+        "mol_wt", "log_p", "num_rings", "num_rotatable_bonds", "num_hbd", "num_hba",
+    ]
+    predictor = train_reranker(
+        training_df, model_path=str(tmp_path / "model4"),
+        feature_columns=feature_columns, time_limit=10,
+    )
+    single_molecule = training_df[training_df["molecule_id"] == training_df["molecule_id"].iloc[0]]
+    result = rerank_candidates(predictor, single_molecule, feature_columns, top_k=25)
+    assert len(result) == len(single_molecule)  # fewer than 25 available, returns all
