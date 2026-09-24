@@ -577,12 +577,37 @@ the full `<username>/<slug>` format even for a brand-new kernel, not a
 bare slug; the actual kernel slug also gets auto-derived from
 `newTitle` on creation (`"CASMI 2026 Full Scale Pipeline"` →
 `casmi-2026-full-scale-pipeline`), so the `slug` field's exact string
-doesn't fully control it on first creation. Kernel now live at
+doesn't fully control it on first creation. Kernel live at
 https://www.kaggle.com/code/noname7n11/casmi-2026-full-scale-pipeline,
 running with `sample_size=2_600_000` (the full dataset), competition
 data attached, `enableInternet=true`, `SaveAndRunAll`, 9-hour session
-timeout. Confirmed status=RUNNING via `get_notebook_session_status`.
-Next: monitor to completion, pull `submission.csv`/`submission_reranked.csv`
-via `download_notebook_output`, and address the competition's
+timeout.
+
+**Version 1 failed:** status=ERROR. Root cause from
+`list_notebook_session_output`'s log: `pip install matchms` on
+Kaggle's base image pulled in a `scipy` version whose `array_api_compat`
+shim required a newer numpy than what actually landed
+(`ImportError: cannot import name '_center' from 'numpy._core.umath'`)
+— pip resolved `matchms`'s own dependency chain without accounting for
+Kaggle's already-heavy pre-installed environment, landing on a mutually
+incompatible numpy/scipy pair. This is a real dependency-resolution
+conflict specific to installing packages into Kaggle's populated base
+image, not something the local `.venv-reranker` (built from a clean
+Python 3.12 venv) ever exposed.
+
+**Fix:** added `!pip install -q --upgrade numpy scipy` as an explicit
+first step before the main install, forcing numpy and scipy to be
+resolved and upgraded together as a compatible pair rather than letting
+`matchms`'s transitive scipy pull happen independently. Pushed as
+version 3 (version 2 was the plan-check placeholder used to discover
+the correct `save_notebook` slug format, see below). Also learned: the
+minimal-payload approach used to first discover a working slug format
+left the kernel privately created with placeholder content as version
+1 — subsequent real pushes are versions on the SAME kernel via its
+`kernel_id`, not new kernels, once the slug is known.
+
+Next: monitor version 3 to completion, pull
+`submission.csv`/`submission_reranked.csv` via
+`download_notebook_output`, and address the competition's
 offline-scoring requirement (internet OFF) as a follow-up once this
 run proves the pipeline works at full scale.
