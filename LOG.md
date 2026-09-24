@@ -487,3 +487,41 @@ streaming/chunked loading approach instead of loading a full sample
 into memory at once — the latter is a larger architectural change, not
 attempted here. No code changes were made; this is purely an
 operational finding.
+
+### Wired up MLflow experiment tracking (bounded change)
+
+**What:** installed `mlflow` (3.16.1) into `.venv-reranker` and added a
+final notebook cell logging each run's parameters (sample_size, split
+seeds, ppm_tolerance, AutoGluon time_limit, training row/positive
+counts), metrics (offline/baseline/reranked MRR@25, delta), and
+artifacts (both submission CSVs) to `./mlruns`, per WORKFLOW.md's
+original experiment-tracking design. Also fixed a mojibake em-dash in
+the notebook's title cell while editing nearby.
+
+**Why:** three scaled runs tonight (75k/300k/1M) each produced
+different MRR@25 numbers that only existed as prose in this LOG.md file
+— easy to lose track of exactly which parameters produced which result
+as more runs accumulate, especially once Kaggle/Colab runs start
+writing to the same tracking store per WORKFLOW.md's cross-platform
+design.
+
+**Bug found and fixed:** MLflow 3.16.1 has deprecated the plain
+filesystem tracking backend (`./mlruns`) that WORKFLOW.md's design
+assumed — it now raises `MlflowException` ("filesystem tracking backend
+... is in maintenance mode") unless `MLFLOW_ALLOW_FILE_STORE=true` is
+set, pushing users toward a SQLite backend instead. This is real
+version drift in MLflow itself since WORKFLOW.md was written, not a
+mistake in the wiring. Fixed by setting the env var before
+`mlflow.set_tracking_uri(...)`, preserving the original filesystem-based
+design intent (simplest, no server setup, matches the doc's own stated
+goal) rather than migrating to SQLite. The rest of the ~1M-scale run
+(offline MRR@25=0.5166, double-holdout baseline=0.4732/reranked=0.6416)
+completed identically to the earlier successful 1M run before this
+cell failed, confirming the failure was isolated to the new MLflow code
+and not a regression elsewhere. Verified the fix standalone (not by
+re-running the full ~60-minute notebook again) by logging this run's
+actual real numbers directly via the fixed code path and querying them
+back with `mlflow.search_runs(...)` — confirmed present and correct.
+41/41 tests still passing. The notebook's own stored cell output still
+shows the pre-fix error text until its next natural re-run (e.g. when
+moving to Kaggle); the underlying code is correct and tested.
