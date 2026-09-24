@@ -455,3 +455,35 @@ dataset may need more careful memory management or a machine with more
 RAM (e.g. a Kaggle/Colab notebook, which WORKFLOW.md already earmarks
 for full-dataset processing) rather than pushing this local machine
 further.
+
+### Attempted full 2.5M dataset locally — confirmed impractical (no code changes)
+
+**What:** tried `sample_size=2_600_000` (the full `train.parquet`,
+2,539,608 rows) on this local machine to see if the 1M run's tight
+memory margin was a one-off or a real ceiling.
+
+**Result:** confirmed a real ceiling. Free system RAM (16GB total)
+dropped to 0.1–0.3GB within minutes of the data-loading cell starting,
+and the kernel process's CPU usage collapsed from the healthy ~100%
+seen in prior runs to ~28%, consistent with heavy OS-level paging/swap
+thrashing rather than genuine progress. Killed the process manually
+before it either crashed outright or degraded the whole machine's
+responsiveness further. No data was written (submission files are only
+produced at the very end of the notebook, well past where this failed),
+and the notebook file itself was unaffected — `nbconvert` only writes
+its output on successful completion, so `Enveda_CASMI_local.ipynb`
+still holds the last successful 1M-scale run's results untouched. The
+one-line `sample_size` edit was reverted via `git checkout`.
+
+**Decision:** the full 2.5M dataset is not viable on this 16GB local
+machine with the current code path — 1M rows already used most of
+available RAM, and pyarrow's `Table.take()` approach (the fix from the
+baseline sub-project's earlier MemoryError) has a real ceiling well
+before the full dataset, not just a slow-but-survivable one. **1M rows
+stands as the practical local ceiling** for this project's current
+architecture. Scaling further requires either a higher-RAM environment
+(Kaggle's 30GB, per WORKFLOW.md's own compute table) or a genuinely
+streaming/chunked loading approach instead of loading a full sample
+into memory at once — the latter is a larger architectural change, not
+attempted here. No code changes were made; this is purely an
+operational finding.
