@@ -571,10 +571,18 @@ only; the identical MRR@25 numbers to the original gradient-boosted run
 suggest this was not a meaningful difference at 75k scale, though it's
 noted here for completeness rather than assumed.
 
-**Next:** pushing `Enveda_CASMI_kaggle.ipynb` to Kaggle via
-`save_notebook` (competition data attached as a data source,
-`enableInternet=true` for this build/validation phase — the
-competition's actual offline-scoring requirement is a follow-up
-concern once the pipeline is proven to work at full scale), running at
-`sample_size=2_600_000` (the full dataset), and pulling results back via
-`download_notebook_output` once complete.
+**Pushed live:** `save_notebook` initially rejected two slug attempts
+("Invalid slug") before succeeding — Kaggle's `save_notebook` requires
+the full `<username>/<slug>` format even for a brand-new kernel, not a
+bare slug; the actual kernel slug also gets auto-derived from
+`newTitle` on creation (`"CASMI 2026 Full Scale Pipeline"` →
+`casmi-2026-full-scale-pipeline`), so the `slug` field's exact string
+doesn't fully control it on first creation. Kernel now live at
+https://www.kaggle.com/code/noname7n11/casmi-2026-full-scale-pipeline,
+running with `sample_size=2_600_000` (the full dataset), competition
+data attached, `enableInternet=true`, `SaveAndRunAll`, 9-hour session
+timeout. Confirmed status=RUNNING via `get_notebook_session_status`.
+Next: monitor to completion, pull `submission.csv`/`submission_reranked.csv`
+via `download_notebook_output`, and address the competition's
+offline-scoring requirement (internet OFF) as a follow-up once this
+run proves the pipeline works at full scale.
