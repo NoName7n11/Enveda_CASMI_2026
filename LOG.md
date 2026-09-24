@@ -606,8 +606,32 @@ left the kernel privately created with placeholder content as version
 1 — subsequent real pushes are versions on the SAME kernel via its
 `kernel_id`, not new kernels, once the slug is known.
 
-Next: monitor version 3 to completion, pull
+**Version 3 also failed:** the upgrade did take effect (numpy 2.5.3,
+scipy 1.18.1 both installed), but a NEW, deeper error surfaced:
+`AttributeError: module 'numpy._core._multiarray_umath' has no
+attribute '_blas_supports_fpe'` — numpy's compiled C extension
+(`_multiarray_umath`) ended up mismatched with its pure-Python package
+version, a classic symptom of an in-place `--upgrade` leaving stale
+compiled artifacts behind rather than a clean, fully-consistent
+install. The plain `--upgrade` flag wasn't sufficient to guarantee a
+matched compiled/Python pair on top of Kaggle's already-populated
+environment.
+
+**Fix:** changed to `pip install -q --upgrade --force-reinstall
+--no-cache-dir numpy scipy`, forcing a genuinely clean reinstall of
+both packages' compiled and Python parts together (not just an
+in-place version bump), so no stale extension artifacts from the
+pre-installed numpy can remain. Pushed as version 4.
+
+Next: monitor version 4 to completion, pull
 `submission.csv`/`submission_reranked.csv` via
 `download_notebook_output`, and address the competition's
 offline-scoring requirement (internet OFF) as a follow-up once this
-run proves the pipeline works at full scale.
+run proves the pipeline works at full scale. (Pattern emerging: Kaggle's
+heavily pre-populated base image — Colab-derived packages like
+`google-colab`, `bigframes`, `ydata-profiling` all visible in the
+dependency-conflict warnings — makes installing scientific-stack
+packages meaningfully harder than a clean local venv; this is
+environment-specific friction, not a code defect in the pipeline
+itself, which has already been verified correct via the local smoke
+test.)
