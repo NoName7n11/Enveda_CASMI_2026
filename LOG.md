@@ -525,3 +525,56 @@ back with `mlflow.search_runs(...)` — confirmed present and correct.
 41/41 tests still passing. The notebook's own stored cell output still
 shows the pre-fix error text until its next natural re-run (e.g. when
 moving to Kaggle); the underlying code is correct and tested.
+
+### Built Kaggle deployment notebook, full 2.5M-scale run (architectural: new environment)
+
+**What:** built `Enveda_CASMI_kaggle.ipynb` per WORKFLOW.md's two-notebook
+rule — inlines `src/metric.py`, `src/data.py`, `src/baseline.py`,
+`src/reranker.py` directly into notebook cells (Kaggle notebooks are
+single-file, no repo checkout; inlining is also the only option
+compatible with the competition's offline-scoring requirement, which
+rules out fetching the GitHub repo at runtime). Paths adapted to
+Kaggle's mounted competition data
+(`/kaggle/input/enveda-CASMI26-molecule-id-mass-spectra/`). No MLflow
+in this notebook — WORKFLOW.md specifies the final submission notebook
+should have zero tracking dependencies, just `submission.csv` output.
+Confirmed real Kaggle API access this session (`mcp__kaggle__*` tools):
+verified authenticated (unused GPU quota matches WORKFLOW.md's 30hr/week
+figure) and verified the competition's `train.parquet`/`test.parquet`
+file sizes match the local copies exactly.
+
+**Why:** local machine's ~16GB RAM caps sample_size at ~1M rows (see
+prior entry's failed 2.5M attempt). Kaggle's 30GB RAM plus pre-loaded
+competition data (per WORKFLOW.md's compute table) is the intended
+platform for full-dataset work.
+
+**Verification before pushing to Kaggle:** rather than trust a
+hand-assembled inlined notebook blindly, extracted its code and ran it
+locally at the already-trusted 75k-row scale (with local dataset paths
+substituted for Kaggle's mount path). Caught and fixed one real bug
+during this process: the inlined `extract_candidate_features` function
+referenced `Spectrum` as a dict-value type hint without importing it
+(the real `src/reranker.py` gets it transitively via
+`from src.baseline import Spectrum`, which doesn't apply once modules
+are flattened) — harmless at runtime since Python doesn't evaluate
+local variable annotations, but incomplete/misleading as written; fixed
+by adding the explicit `from matchms import Spectrum` import. After the
+fix, the smoke test reproduced the trusted 75k local result exactly:
+baseline MRR@25=0.3849, reranked=0.3946, delta=+0.0097 (bit-for-bit
+match to the earlier "75k, honest double-holdout" run). This local
+smoke-test venv (`.venv-reranker`) had separately lost `torch`/
+`lightgbm`/`xgboost`/`catboost` since the earlier fix-wave installed
+them (cause not yet investigated, tracked as a follow-up — does not
+affect Kaggle, which installs fresh dependencies independently), so
+this particular smoke-test run fell back to RandomForest/ExtraTrees
+only; the identical MRR@25 numbers to the original gradient-boosted run
+suggest this was not a meaningful difference at 75k scale, though it's
+noted here for completeness rather than assumed.
+
+**Next:** pushing `Enveda_CASMI_kaggle.ipynb` to Kaggle via
+`save_notebook` (competition data attached as a data source,
+`enableInternet=true` for this build/validation phase — the
+competition's actual offline-scoring requirement is a follow-up
+concern once the pipeline is proven to work at full scale), running at
+`sample_size=2_600_000` (the full dataset), and pulling results back via
+`download_notebook_output` once complete.
