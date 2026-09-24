@@ -635,3 +635,54 @@ packages meaningfully harder than a clean local venv; this is
 environment-specific friction, not a code defect in the pipeline
 itself, which has already been verified correct via the local smoke
 test.)
+
+## 2026-09-24 (cont'd) — Kaggle v4 failure, strategy pivot to GPU image
+
+**Version 4 also failed**, and non-deterministically: `list_notebook_session_output`
+showed the exact same `_center` ImportError as version 1 (not version 3's
+`_blas_supports_fpe` error), even though the log confirmed the
+`--force-reinstall --no-cache-dir` upgrade DID execute (numpy 2.5.3, scipy
+1.18.1 installed). Same code, same install command, two different failure
+signatures across runs (v1/v4 vs v3) — this rules out a deterministic
+ordering/flag bug. Real diagnosis: fighting Kaggle's Colab-derived CPU base
+image's numpy build via pip reinstalls is fundamentally unreliable, not a
+fixable one-liner. Continuing to iterate on pip flags would just be
+re-rolling the same dice.
+
+**Pivot:** switched strategy instead of continuing to patch the install
+command. Checked GPU quota (`get_accelerator_quota`: 0s used, 30h available)
+and pushed version 5 with `enableGpu=true`, on the theory that Kaggle's
+GPU-accelerator base image carries a different (and hopefully more
+internally-consistent) preinstalled numpy/scipy stack than the flaky default
+CPU image. Also simplified the pip install cell back to a plain
+`pip install -q autogluon.tabular rdkit matchms` (dropped the
+upgrade/force-reinstall dance entirely) — if the GPU image's numpy is already
+consistent, fighting it was never the fix; if it still breaks, that's a
+cleaner signal.
+
+Also switched how the notebook is pushed: rather than multi-cell JSON
+assembled into `.ipynb` structure, pushed v5 as a single flat `text` payload
+(one script, comments marking each inlined module) to `save_notebook`. Same
+logical content as `Enveda_CASMI_kaggle.ipynb`'s cells, concatenated in
+order; simpler and less brittle than reconstructing notebook cell JSON by
+hand. The local `Enveda_CASMI_kaggle.ipynb` file was updated in lockstep
+(pip cell simplified to match) so the repo's copy and the live Kaggle kernel
+stay logically identical.
+
+**Status check blocked:** immediately after pushing v5, both
+`get_notebook_session_status` and `list_notebook_session_output` started
+returning `Permission 'kernels.get' was denied` — an MCP auth/scope error,
+not a notebook execution error (`get_accelerator_quota` kept working fine
+throughout). Circumstantial signal from quota polling: GPU `time_used` moved
+only 10.19s → 11.41s across a ~5 minute gap, suggesting the v5 session ended
+(errored or finished fast) shortly after starting rather than still being
+mid-run on 2.6M rows — but this can't be confirmed without session-output
+access. Flagged to user; re-authorizing the Kaggle MCP connection is the
+likely fix. User is checking Kaggle directly in the meantime.
+
+Next: once `kernels.get` access is restored, re-poll v5's status/output log.
+If GPU image also fails, next real alternatives are (a) pin matchms/numpy/
+scipy to specific known-compatible versions instead of `--upgrade` to
+latest, or (b) fall back to the local 1M-row result (baseline MRR@25=0.4732,
+reranked=0.6416) as the current best validated submission while Kaggle
+access issues get sorted out separately.
