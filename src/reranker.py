@@ -1,4 +1,4 @@
-"""AutoGluon-based reranker: richer per-candidate features + trained reordering."""
+"""sklearn-based reranker: richer per-candidate features + trained reordering."""
 
 import numpy as np
 import pandas as pd
@@ -152,20 +152,31 @@ def train_reranker(
     label_column: str = "is_correct",
     time_limit: int = 120,
 ):
-    """Train a binary-classification AutoGluon reranker.
+    """Train a binary-classification reranker (sklearn GradientBoostingClassifier).
 
-    Returns the fitted TabularPredictor. Raises whatever AutoGluon raises
-    on degenerate input (e.g. a single-class training set) — that failure
-    is intentionally not caught here, since a silently-broken model is
-    worse than a loud training-time error.
+    Originally used AutoGluon's TabularPredictor, but AutoGluon's import
+    chain reproducibly broke numpy's own `_core.umath` module on Kaggle's
+    hosted notebook environment (ImportError: cannot import name '_center'),
+    independent of kernel freshness, numpy version pinning, or force-
+    reinstalling numpy -- the same failure mode previously seen with
+    `matchms` (see src/baseline.py's module docstring). scikit-learn is a
+    stable, pre-installed Kaggle dependency with none of AutoGluon's fragile
+    transitive imports, at the cost of AutoGluon's automatic model
+    selection/ensembling -- a single GradientBoostingClassifier is used
+    instead. `model_path` and `time_limit` are accepted for call-site
+    compatibility but unused (sklearn doesn't checkpoint to disk or take a
+    wall-clock training budget the way AutoGluon does).
+
+    Returns the fitted classifier. Raises whatever sklearn raises on
+    degenerate input (e.g. a single-class training set) -- that failure is
+    intentionally not caught here, since a silently-broken model is worse
+    than a loud training-time error.
     """
-    from autogluon.tabular import TabularPredictor
+    from sklearn.ensemble import GradientBoostingClassifier
 
-    predictor = TabularPredictor(
-        label=label_column, path=model_path, problem_type="binary", eval_metric="roc_auc"
-    )
-    predictor.fit(training_df[feature_columns + [label_column]], time_limit=time_limit)
-    return predictor
+    model = GradientBoostingClassifier(random_state=42)
+    model.fit(training_df[feature_columns], training_df[label_column])
+    return model
 
 
 def rerank_candidates(
@@ -175,16 +186,18 @@ def rerank_candidates(
 
     Returns up to top_k SMILES strings, highest predicted probability first.
     Explicitly selects the probability of the positive class (is_correct=1)
-    rather than assuming column position, since AutoGluon's predict_proba
-    column order is not guaranteed to be [0, 1].
+    by its position in `predictor.classes_` rather than assuming column
+    order, since a classifier trained on degenerate/reordered labels is not
+    guaranteed to put the positive class in a fixed column position.
     """
     if candidate_features_df.empty:
         return []
 
     probabilities = predictor.predict_proba(candidate_features_df[feature_columns])
-    positive_class_probs = probabilities[1] if 1 in probabilities.columns else probabilities[True]
+    positive_class_idx = list(predictor.classes_).index(1)
+    positive_class_probs = probabilities[:, positive_class_idx]
 
-    ranked = candidate_features_df.assign(_positive_prob=positive_class_probs.values).sort_values(
+    ranked = candidate_features_df.assign(_positive_prob=positive_class_probs).sort_values(
         "_positive_prob", ascending=False
     )
     return ranked["smiles"].head(top_k).tolist()

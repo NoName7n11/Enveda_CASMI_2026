@@ -256,7 +256,7 @@ def test_train_reranker_fits_and_returns_predictor(tmp_path):
         feature_columns=feature_columns, time_limit=10,
     )
     predictions = predictor.predict_proba(training_df[feature_columns])
-    assert 1 in predictions.columns or True in predictions.columns
+    assert 1 in predictor.classes_
 
 
 from src.reranker import rerank_candidates
@@ -316,8 +316,10 @@ def test_rerank_candidates_respects_top_k_smaller_than_pool(tmp_path):
 
 
 class _StubPredictor:
+    classes_ = np.array([0, 1])
+
     def predict_proba(self, X):
-        return pd.DataFrame({0: [0.9, 0.1, 0.5], 1: [0.1, 0.9, 0.5]})
+        return np.array([[0.9, 0.1], [0.1, 0.9], [0.5, 0.5]])
 
 
 def test_rerank_candidates_selects_positive_class_by_name_not_position():
@@ -330,10 +332,12 @@ def test_rerank_candidates_selects_positive_class_by_name_not_position():
 
 
 class _StubPredictorReversedColumns:
+    # classes_ in [1, 0] order instead of [0, 1] -- proves selection is by
+    # looking up 1's position in classes_, not by assuming column 1 is it.
+    classes_ = np.array([1, 0])
+
     def predict_proba(self, X):
-        # Columns in [1, 0] order instead of [0, 1] -- proves selection is by
-        # name/membership check, not by position.
-        return pd.DataFrame({1: [0.1, 0.9, 0.5], 0: [0.9, 0.1, 0.5]})
+        return np.array([[0.1, 0.9], [0.9, 0.1], [0.5, 0.5]])
 
 
 def test_rerank_candidates_column_selection_is_name_based_not_positional():

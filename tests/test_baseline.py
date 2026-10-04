@@ -10,12 +10,10 @@ from src.baseline import (
 )
 
 
-def test_to_matchms_spectrum_builds_spectrum_with_metadata():
-    spec = to_matchms_spectrum(
-        mzs=[100.0, 200.0], intensities=[0.5, 1.0], metadata={"id": "s1"}
-    )
-    assert list(spec.peaks.mz) == [100.0, 200.0]
-    assert spec.get("id") == "s1"
+def test_to_matchms_spectrum_builds_sorted_mz_and_intensity_arrays():
+    spec = to_matchms_spectrum(mzs=[200.0, 100.0], intensities=[1.0, 0.5])
+    assert list(spec["mz"]) == [100.0, 200.0]
+    assert list(spec["intensities"]) == [0.5, 1.0]
 
 
 def test_filter_candidates_matches_adduct_and_ppm_window():

@@ -686,3 +686,140 @@ scipy to specific known-compatible versions instead of `--upgrade` to
 latest, or (b) fall back to the local 1M-row result (baseline MRR@25=0.4732,
 reranked=0.6416) as the current best validated submission while Kaggle
 access issues get sorted out separately.
+
+## 2026-10-02 to 2026-10-04 — Kaggle MCP breaks for good; pivot to manual
+browser control; full 2.5M-row pipeline succeeds
+
+**Kaggle MCP never recovered.** Across a full session gap and multiple
+re-auth attempts (OAuth via `/mcp`, a Kaggle API-key bearer token via
+`mcp-remote`, several `claude mcp` scope fixes — the server kept landing in
+different project-scope keys depending on path casing, a genuine harness
+bug), every notebook-management call (`save_notebook`,
+`get_notebook_session_status`, `list_notebook_session_output`,
+`search_competitions`) kept returning `Unauthenticated`, even once `/mcp`
+showed "connected, authenticated, 71 tools." A much smaller, separately-
+scoped Kaggle MCP surface (`search_kaggle_datasets`,
+`download_kaggle_dataset`) worked fine throughout, proving auth wasn't
+universally broken — just broken for the notebook-management endpoints this
+project actually needs. Diagnosed as a session-/harness-level bug, not
+fixable from this side.
+
+**Pivot: drove Kaggle's web UI directly via the chrome-devtools MCP
+browser**, logging in manually once, then using File → Import Notebook
+(upload `Enveda_CASMI_kaggle.ipynb`), Settings → Accelerator → GPU T4 x2,
+and Run All / Save Version through the actual editor. Slower and more
+brittle than the notebook-management API (every check needs a full
+accessibility-tree snapshot, which routinely exceeds the tool's size limit
+and has to be grepped from a saved file instead of read directly), but
+fully functional once the workflow was established.
+
+**v4/v5-era failure, root-caused at last:** the `numpy._core.umath`
+`_center` ImportError that had dogged every matchms-based install attempt
+(CPU image, GPU image, numpy/scipy pinned every which way, --force-reinstall,
+fresh kernels) turned out to be **specific to `matchms`'s own import chain**
+(`matchms` → `matchms.filtering.exporting` → `scipy.sparse` →
+`numpy._core.strings` → `numpy._core.umath`), not a general Kaggle-numpy
+problem. Confirmed by checking Kaggle's own official tutorial for this
+competition (`inversion/casmi-denovo-tutorial-notebook`), which avoids
+`matchms` entirely and builds spectral similarity from rdkit fingerprints
+instead. Fix: **dropped the `matchms` dependency**, reimplementing
+`CosineGreedy`'s greedy tolerance-matched peak-pairing cosine similarity
+directly in numpy (`src/baseline.py::cosine_similarity`, ~40 lines) —
+`Spectrum` became a plain `{"mz": ..., "intensities": ...}` dict, no
+external spectral library needed at all. All 21 existing tests (including
+both cosine-similarity unit tests and the full end-to-end integration test)
+pass unchanged against the reimplementation, confirming numeric parity.
+
+**Second identical failure, same fix needed twice:** once matchms was gone,
+the exact same `_center` ImportError resurfaced — this time from
+**`autogluon.tabular`**'s own import chain, on a fully fresh kernel, with a
+plain unpinned `pip install`. Confirms the underlying issue is real and
+general to *some* subset of Kaggle's scientific-stack packages (whatever
+internal scipy/pandas build autogluon bundles), not matchms-specific after
+all — matchms and autogluon independently hit the identical numpy internal
+inconsistency. Tried the already-partially-successful fix (force-reinstall
+numpy right after autogluon installs) twice, including re-running just the
+affected cell in-place without disturbing already-computed `train_df`/
+`submission.csv` — both attempts reproduced the identical error byte-for-
+byte, proving the force-reinstall doesn't durably fix autogluon's own
+internal build the way it occasionally appeared to for matchms. **Fix:
+dropped AutoGluon, replaced with `sklearn.ensemble.GradientBoostingClassifier`**
+(`src/reranker.py::train_reranker`/`rerank_candidates`) — sklearn is a
+stable, pre-installed Kaggle dependency with none of AutoGluon's fragile
+transitive imports. `rerank_candidates` now looks up the positive class's
+column index via `predictor.classes_` instead of assuming a fixed
+`predict_proba` column name (AutoGluon exposed `predict_proba` returning a
+labeled DataFrame; sklearn returns a plain ndarray ordered by
+`classes_`), with existing name/position-safety tests rewritten as stub
+classifiers carrying a `classes_` attribute. All 21 tests pass, and ~2x
+faster (67s vs 130s local test suite) than the AutoGluon-era tests.
+
+**A packaging bug self-inflicted during the matchms/AutoGluon fix passes:**
+the Kaggle-notebook-cell rebuild script used to inline `src/baseline.py`
+and `src/reranker.py` into the notebook matched cells by loose substring
+checks (`'pip install' in src`), which collided across two different cells
+and silently overwrote the `src/baseline.py` cell's content with the
+pip-install line — **deleting `build_submission` and everything else from
+that cell** without any error at rebuild time. Only surfaced as a
+`NameError: name 'build_submission' is not defined` partway through an
+otherwise-successful run. Fixed by throwing away the incremental/patching
+rebuild approach entirely and writing a clean from-scratch notebook
+assembly script that reads each `src/*.py` file once, builds every cell
+explicitly by position (not by content-matching), and asserts each expected
+function name (`build_submission`, `train_reranker`, `rerank_candidates`,
+etc.) is actually present in the assembled JSON before writing it to disk —
+catching this whole class of bug at build time instead of discovering it
+mid-run.
+
+**Also found and fixed:** the competition's mounted data directory is
+`/kaggle/input/competitions/enveda-CASMI26-molecule-id-mass-spectra/`, not
+the flatter `/kaggle/input/enveda-CASMI26-molecule-id-mass-spectra/` layout
+used by some older/classic competitions — a plain `os.listdir('/kaggle/input')`
+diagnostic cell (`['competitions']`) found this directly rather than
+guessing. `KAGGLE_INPUT_DIR` in the inlined `src/data.py` cell was corrected
+accordingly.
+
+**An overnight interruption:** between pushing the matchms/AutoGluon/path
+fixes and actually confirming a clean run, the Kaggle kernel's interactive
+session expired (free-tier GPU sessions have a hard time limit), losing all
+in-memory state (`train_df`, the trained model) though the notebook's saved
+cells and competition-data attachment survived. Required a full fresh
+Run All rather than resuming — caught a stray `beforeunload` browser dialog
+on reconnect (accepted it) and re-verified GPU was still enabled before
+re-running.
+
+**Result — full pipeline succeeded end to end at complete (~2.5M-row)
+scale, twice, both the ad-hoc interactive run and the official "Save & Run
+All (Commit)" artifact:**
+
+- Data loaded: 2,539,608 training spectra, 275,810 unique structures;
+  1,213 test spectra, 400 unique molecules.
+- **Baseline-only MRR@25 (independent double-holdout, random_state=99):
+  0.6740**
+- **Reranked MRR@25: 0.8393** (delta **+0.1653**)
+- `submission.csv`: 400 rows. `submission_reranked.csv`: 400 rows.
+- Committed version (`noname7n11/notebooka927747cc9`, "Version 1 of 1")
+  reproduced these exact numbers on a completely fresh container
+  (`2514.2 second run - successful`, ~42 minutes, including pip install
+  from scratch) — confirming the result is deterministic and reproducible,
+  not an artifact of warm kernel state.
+
+This is both the project's best validated result by a wide margin (prior
+best was the local 1M-row run's reranked MRR@25=0.6416) and the first
+Kaggle run of any kind — baseline or reranked — to complete successfully at
+full competition scale after roughly a dozen distinct failed attempts
+spanning CPU/GPU images, numpy/scipy pin strategies, fresh kernels, and two
+separate third-party-library import failures. The root-cause pattern across
+this entire multi-day debugging arc: Kaggle's heavily pre-populated base
+image (Colab-derived packages, numpy≥2.0-oriented) is fundamentally hostile
+to packages whose own dependency chains assume a different numpy baseline
+than whatever pip resolves fresh into that image — the fix was never a pip
+flag, it was removing the fragile dependencies (`matchms`, `autogluon`) in
+favor of code with no transitive scientific-stack imports at all (hand-
+written numpy, sklearn).
+
+Next: local notebook and its MLflow tracking still reflect the pre-matchms-
+removal, AutoGluon-based 1M-row result — not yet re-run against the current
+`src/baseline.py`/`src/reranker.py`. Also still open: the competition's
+offline-scoring requirement (internet OFF verification), parked since
+early in the Kaggle work and not yet revisited.

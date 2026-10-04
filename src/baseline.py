@@ -1,24 +1,36 @@
-"""Precursor-mass + cosine-similarity retrieval baseline."""
+"""Precursor-mass + cosine-similarity retrieval baseline.
+
+Spectral cosine similarity is implemented directly in numpy rather than via
+the `matchms` library. matchms's import chain (matchms -> exporting ->
+scipy.sparse -> numpy.char -> numpy._core.strings -> numpy._core.umath)
+proved unreliable on Kaggle's hosted notebook environment: across many
+fresh-kernel, fresh-container attempts, plain `pip install matchms`
+reproducibly broke numpy's own `_core.umath` module (ImportError:
+cannot import name '_center'), independent of kernel state, CPU vs GPU
+image, or numpy/scipy version pinning. Kaggle's own official tutorial
+notebook for this competition (inversion/casmi-denovo-tutorial-notebook)
+also avoids matchms, using rdkit fingerprints instead. Reimplementing the
+one piece of matchms this project actually used -- CosineGreedy's
+greedy tolerance-matched peak-pair cosine score -- removes that fragile
+dependency entirely.
+"""
 
 import numpy as np
 import pandas as pd
-from matchms import Spectrum
-from matchms.similarity import CosineGreedy
 
-_cosine_greedy = CosineGreedy(tolerance=0.01)
+Spectrum = dict  # {"mz": np.ndarray (sorted ascending), "intensities": np.ndarray}
 
 
-def to_matchms_spectrum(mzs, intensities, metadata: dict) -> Spectrum:
-    """Build a matchms Spectrum from raw mz/intensity arrays."""
+def to_matchms_spectrum(mzs, intensities, metadata: dict | None = None) -> Spectrum:
+    """Build a Spectrum (sorted mz/intensity arrays) from raw mz/intensity data.
+
+    `metadata` is accepted for call-site compatibility but unused -- only
+    mz/intensity arrays are needed for the cosine similarity computed here.
+    """
     mz_array = np.asarray(mzs, dtype=float)
     intensity_array = np.asarray(intensities, dtype=float)
-    # matchms requires mzs sorted ascending
     order = np.argsort(mz_array)
-    return Spectrum(
-        mz=mz_array[order],
-        intensities=intensity_array[order],
-        metadata=metadata,
-    )
+    return {"mz": mz_array[order], "intensities": intensity_array[order]}
 
 
 def filter_candidates(
@@ -35,12 +47,51 @@ def filter_candidates(
     return train_df[adduct_mask & ppm_mask]
 
 
-def cosine_similarity(spectrum_a: Spectrum, spectrum_b: Spectrum) -> float:
-    """matchms CosineGreedy score between two spectra; 0.0 if either is empty."""
-    if len(spectrum_a.peaks.mz) == 0 or len(spectrum_b.peaks.mz) == 0:
+def cosine_similarity(
+    spectrum_a: Spectrum, spectrum_b: Spectrum, tolerance: float = 0.01
+) -> float:
+    """Greedy tolerance-matched cosine similarity between two spectra.
+
+    Reimplements matchms.similarity.CosineGreedy's algorithm directly in
+    numpy: for every peak pair within `tolerance` Da, compute an intensity
+    product score; greedily accept the highest-scoring pairs first (each
+    peak used at most once); normalize the summed matched-pair products by
+    the full (unmatched-inclusive) norms of both spectra. Returns 0.0 if
+    either spectrum has no peaks or no peaks match within tolerance.
+    """
+    mz_a, intensities_a = spectrum_a["mz"], spectrum_a["intensities"]
+    mz_b, intensities_b = spectrum_b["mz"], spectrum_b["intensities"]
+    if len(mz_a) == 0 or len(mz_b) == 0:
         return 0.0
-    result = _cosine_greedy.pair(spectrum_a, spectrum_b)
-    return float(result["score"])
+
+    norm_a = np.linalg.norm(intensities_a)
+    norm_b = np.linalg.norm(intensities_b)
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+
+    # All candidate (i, j) peak pairs within tolerance, scored by intensity
+    # product, sorted descending so the greedy pass accepts the best matches
+    # first -- matching matchms's CosineGreedy pairing behavior.
+    diffs = np.abs(mz_a[:, None] - mz_b[None, :])
+    pair_i, pair_j = np.nonzero(diffs <= tolerance)
+    if len(pair_i) == 0:
+        return 0.0
+
+    pair_scores = intensities_a[pair_i] * intensities_b[pair_j]
+    order = np.argsort(-pair_scores)
+
+    used_a = np.zeros(len(mz_a), dtype=bool)
+    used_b = np.zeros(len(mz_b), dtype=bool)
+    matched_sum = 0.0
+    for k in order:
+        i, j = pair_i[k], pair_j[k]
+        if used_a[i] or used_b[j]:
+            continue
+        used_a[i] = True
+        used_b[j] = True
+        matched_sum += pair_scores[k]
+
+    return float(matched_sum / (norm_a * norm_b))
 
 
 def score_candidates_for_molecule(
