@@ -37,4 +37,8 @@ A 0.130 public score is roughly consistent with "the pipeline nails the Class 1 
 ## Status
 
 - First real leaderboard signal obtained. Hypothesis from eval-02 confirmed quantitatively.
-- Next decision point (not yet actioned): build Class 2 retrieval vs. submit reranked version to use a slot vs. build honest local validation first.
+- **Follow-up (same day):** both of eval-02's code-level recommendations built —
+  - `make_honest_validation_split` (`src/data.py`): removes ALL spectra of a held-out structure from the pool; `src.baseline` scores exactly 0.0 against it by construction, now asserted by test. Makes the Class 1/2/3 gap reproducible locally without burning a submission slot.
+  - `src/class2_retrieval.py` (new): formula-based candidate retrieval (no spectral match needed), reusing the Class 1 reranker's descriptor-feature code. Currently limited to formula-matching within `train_df` only — a true PubChem/COCONUT-only structure is still unreachable until an offline structure-formula dataset is acquired and swapped in as the candidate source.
+  - 53/53 tests pass. See LOG.md 2026-10-05 entry for full detail.
+- Next decision point (not yet actioned): acquire an offline PubChem/COCONUT formula index (closes the remaining Class 2 gap), train a real Class 2 reranker using `make_honest_validation_split`-generated labels, or submit the reranked `submission_reranked.csv` to use a slot.

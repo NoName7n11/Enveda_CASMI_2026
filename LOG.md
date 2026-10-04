@@ -823,3 +823,49 @@ removal, AutoGluon-based 1M-row result — not yet re-run against the current
 `src/baseline.py`/`src/reranker.py`. Also still open: the competition's
 offline-scoring requirement (internet OFF verification), parked since
 early in the Kaggle work and not yet revisited.
+
+## 2026-10-05 — Honest Class 2/3 validation split + Class 2 formula-retrieval mechanism
+
+Submitted `submission.csv` (baseline-only) to the real Kaggle leaderboard:
+**public MRR@25 = 0.130** vs offline 0.6740 (~5.2x drop). This confirms the
+methodology-leakage finding from the Opus-5 deep audit
+(Analysis/2026-10-04_eval-02): the offline validation split only ever
+measured Class 1 (library-retrieval) performance, and the hidden test set
+is evidently dominated by Class 2/3 molecules this pipeline structurally
+cannot solve. Written up in Analysis/2026-10-05_eval-03.
+
+Built both of eval-02's recommended fixes:
+
+1. **`make_honest_validation_split`** (`src/data.py`) — unlike
+   `make_validation_split`, removes ALL spectra of each held-out structure
+   from the candidate pool, not just some. This is the local proxy for
+   Class 2/3 performance: a retrieval-only pipeline (`src.baseline`) scores
+   exactly 0.0 MRR@25 against it by construction (now asserted in
+   `tests/test_data.py`), making the Class 1/2/3 gap visible locally
+   instead of costing a leaderboard submission to discover.
+
+2. **`src/class2_retrieval.py`** (new) — Class 2 candidate retrieval
+   mechanism per OVERVIEW.md Section 6's recommended approach: retrieve
+   candidates by exact `molecular_formula` match (no spectral similarity
+   required, since Class 2 molecules have no reference spectrum to match
+   against) and rank by exact-mass ppm error as a naive baseline ordering.
+   `extract_structure_features` reuses `src.reranker._rdkit_descriptors` so
+   the same reranker-training infrastructure built for Class 1 transfers
+   directly once labeled training data is available — only the candidate
+   *source* differs.
+   - **Known limitation, stated in the module docstring:** this only
+     searches `train_df` for formula matches, since that's the only
+     structure table available offline in this repo. A structure absent
+     from `train_df` entirely (i.e. most real Class 2 cases, which by
+     definition are PubChem/COCONUT-only) is still unreachable. Closing
+     that gap needs a self-hosted offline PubChem/COCONUT formula-indexed
+     dataset uploaded to Kaggle — the same offline-dataset trick already
+     used for the rdkit wheel — not a code change to this module.
+
+53/53 tests pass (21 pre-existing + 6 for the honest split + 6 for Class 2
+retrieval).
+
+Not yet done: wiring `class2_retrieval` into the Kaggle notebook pipeline,
+training a real Class 2 reranker (needs labeled Class 2 examples, which
+`make_honest_validation_split` can now generate), or acquiring the
+PubChem/COCONUT offline dataset.

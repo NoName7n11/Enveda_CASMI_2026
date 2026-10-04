@@ -1,6 +1,11 @@
 import pandas as pd
 import pytest
-from src.data import load_test_set, load_sampled_train, make_validation_split
+from src.data import (
+    load_test_set,
+    load_sampled_train,
+    make_validation_split,
+    make_honest_validation_split,
+)
 
 
 def _make_fake_train_df(n_np_examples: int, n_drug_plus: int, n_other: int) -> pd.DataFrame:
@@ -130,3 +135,61 @@ def test_make_validation_split_ground_truth_keys_match_query_molecule_ids(fake_s
         fake_split_train_df, n_held_out=10, random_state=42
     )
     assert set(val_ground_truth.keys()) == set(val_query_df["molecule_id"].unique())
+
+
+def test_make_honest_validation_split_removes_all_spectra_of_held_out_molecules(fake_split_train_df):
+    val_query_df, val_train_df, _ = make_honest_validation_split(
+        fake_split_train_df, n_held_out=10, random_state=42
+    )
+    held_out_keys = set(val_query_df["inchikey14"].unique())
+    assert len(held_out_keys) > 0
+    for key in held_out_keys:
+        # unlike make_validation_split, NO spectra of a held-out molecule
+        # may remain in the candidate pool -- that's the whole point.
+        assert (val_train_df["inchikey14"] == key).sum() == 0
+
+
+def test_make_honest_validation_split_may_select_single_spectrum_molecules(fake_split_train_df):
+    single_spectra_keys = {
+        k for k, n in fake_split_train_df.groupby("inchikey14").size().items() if n < 2
+    }
+    # draw many held-out molecules to make selecting at least one
+    # single-spectrum molecule overwhelmingly likely with this fixture
+    val_query_df, _, _ = make_honest_validation_split(
+        fake_split_train_df, n_held_out=60, random_state=42
+    )
+    assert set(val_query_df["inchikey14"].unique()) & single_spectra_keys
+
+
+def test_make_honest_validation_split_reproducible_with_same_seed(fake_split_train_df):
+    q_a, t_a, gt_a = make_honest_validation_split(fake_split_train_df, n_held_out=10, random_state=42)
+    q_b, t_b, gt_b = make_honest_validation_split(fake_split_train_df, n_held_out=10, random_state=42)
+    pd.testing.assert_frame_equal(q_a.reset_index(drop=True), q_b.reset_index(drop=True))
+    pd.testing.assert_frame_equal(t_a.reset_index(drop=True), t_b.reset_index(drop=True))
+    assert gt_a == gt_b
+
+
+def test_make_honest_validation_split_ground_truth_keys_match_query_molecule_ids(fake_split_train_df):
+    val_query_df, _, val_ground_truth = make_honest_validation_split(
+        fake_split_train_df, n_held_out=10, random_state=42
+    )
+    assert set(val_ground_truth.keys()) == set(val_query_df["molecule_id"].unique())
+
+
+def test_make_honest_validation_split_baseline_retrieval_scores_zero(fake_split_train_df):
+    """The whole point: a retrieval-only pipeline can't find a structure
+    that has zero spectra in the candidate pool, so MRR@25 against this
+    split must be exactly 0.0 for src.baseline.build_submission."""
+    from src.baseline import build_submission
+    from src.metric import mrr_at_25
+
+    val_query_df, val_train_df, val_ground_truth = make_honest_validation_split(
+        fake_split_train_df, n_held_out=10, random_state=42
+    )
+    submission = build_submission(val_query_df, val_train_df, ppm_tolerance=15.0, top_k=25)
+    predictions = {
+        row["molecule_id"]: (row["smiles"].split(";") if row["smiles"] else [])
+        for _, row in submission.iterrows()
+    }
+    score = mrr_at_25(predictions, val_ground_truth)
+    assert score == 0.0

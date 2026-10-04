@@ -125,3 +125,61 @@ def make_validation_split(
     )
 
     return val_query_df, val_train_df, val_ground_truth
+
+
+def make_honest_validation_split(
+    train_df: pd.DataFrame, n_held_out: int = 200, random_state: int = 42
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    """Validation split approximating Class 2/3 (structure absent from the pool).
+
+    make_validation_split() deliberately leaves at least one spectrum of each
+    held-out structure in the candidate pool, which only measures "can we
+    retrieve a structure that's already in the library" -- Class 1. This
+    split instead removes ALL spectra of each held-out structure from
+    val_train_df, so the correct candidate genuinely cannot be retrieved by
+    spectral similarity. A retrieval-only pipeline (src.baseline) should
+    score ~0 MRR@25 against this split by construction -- that's expected,
+    not a bug -- and is the local proxy for Class 2/3 performance described
+    in Analysis/2026-10-04_eval-02_offline-verification-v2.md.
+
+    Unlike make_validation_split, held-out molecules need no minimum spectra
+    count (a single-spectrum molecule is a valid Class 2/3 held-out case
+    here, since none of its spectra need to stay behind). All spectra of
+    each selected molecule become query rows.
+
+    Returns (val_query_df, val_train_df, val_ground_truth), same shape as
+    make_validation_split.
+    """
+    rng = np.random.RandomState(random_state)
+
+    all_keys = train_df["inchikey14"].unique()
+    if "instrument_type" in train_df.columns:
+        timstof_keys = pd.Index(
+            train_df.loc[train_df["instrument_type"] == "timsTOF", "inchikey14"].unique()
+        )
+    else:
+        timstof_keys = pd.Index([], dtype=object)
+    other_keys = pd.Index(all_keys).difference(timstof_keys)
+
+    n_from_timstof = min(n_held_out, len(timstof_keys))
+    selected_timstof = rng.choice(timstof_keys, size=n_from_timstof, replace=False)
+
+    remaining_needed = n_held_out - n_from_timstof
+    n_from_other = min(remaining_needed, len(other_keys))
+    selected_other = rng.choice(other_keys, size=n_from_other, replace=False)
+
+    held_out_molecules = np.concatenate([selected_timstof, selected_other])
+    held_out_set = set(held_out_molecules)
+
+    is_held_out = train_df["inchikey14"].isin(held_out_set)
+    val_query_df = train_df.loc[is_held_out].copy()
+    val_query_df["molecule_id"] = val_query_df["inchikey14"]
+    val_train_df = train_df.loc[~is_held_out]
+
+    val_ground_truth = (
+        val_query_df.drop_duplicates("inchikey14")
+        .set_index("molecule_id")["normalized_smiles"]
+        .to_dict()
+    )
+
+    return val_query_df, val_train_df, val_ground_truth
