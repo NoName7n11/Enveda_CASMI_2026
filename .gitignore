@@ -42,3 +42,4 @@ kaggle.json
 
 # OnTrack local evidence (not for public repo)
 .ontrack/
+scratch_rdkit_wheel/
